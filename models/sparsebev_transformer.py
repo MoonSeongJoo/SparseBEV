@@ -250,7 +250,7 @@ class SparseBEVSelfAttention(BaseModule):
 
 class SparseBEVSampling(BaseModule):
     """Adaptive Spatio-temporal Sampling"""
-    def __init__(self, embed_dims=256, num_frames=4, num_groups=4, num_points=8, num_levels=4, pc_range=[], init_cfg=None):
+    def __init__(self, embed_dims=256, num_frames=8, num_groups=4, num_points=8, num_levels=4, pc_range=[], init_cfg=None):
         super().__init__(init_cfg)
 
         self.num_frames = num_frames

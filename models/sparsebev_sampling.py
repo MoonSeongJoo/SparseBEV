@@ -119,7 +119,8 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
     scale_weights = scale_weights.reshape(B*G*T, Q, P, -1)
 
     # multi-scale multi-view grid sample
-    final = msmv_sampling(mlvl_feats, sample_points_cam, scale_weights)
+    final = msmv_sampling(mlvl_feats, sample_points_cam, scale_weights) # cuda c++ for speed
+    # final = msmv_sampling_pytorch(mlvl_feats, sample_points_cam, scale_weights) # for make sense
 
     # reorganize the sampled features
     C = final.shape[2]  # [BTG, Q, C, P]

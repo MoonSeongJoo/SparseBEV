@@ -132,6 +132,9 @@ class SparseBEV(MVXTwoStageDetector):
 
     def forward_pts_train(self,
                           pts_feats,
+                          points_raw,
+                          points_gt,
+                          points_mis,
                           gt_bboxes_3d,
                           gt_labels_3d,
                           img_metas,
@@ -149,7 +152,7 @@ class SparseBEV(MVXTwoStageDetector):
         Returns:
             dict: Losses of each branch.
         """
-        outs = self.pts_bbox_head(pts_feats, img_metas)
+        outs = self.pts_bbox_head(pts_feats, img_metas,points_raw, points_gt,points_mis)
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
 
@@ -173,6 +176,9 @@ class SparseBEV(MVXTwoStageDetector):
 
     def forward_train(self,
                       points=None,
+                      points_raw =None,
+                      points_gt=None,
+                      points_mis=None,
                       img_metas=None,
                       gt_bboxes_3d=None,
                       gt_labels_3d=None,
@@ -212,20 +218,21 @@ class SparseBEV(MVXTwoStageDetector):
             img_metas[i]['gt_bboxes_3d'] = gt_bboxes_3d[i]
             img_metas[i]['gt_labels_3d'] = gt_labels_3d[i]
 
-        losses = self.forward_pts_train(img_feats, gt_bboxes_3d, gt_labels_3d, img_metas, gt_bboxes_ignore)
+        losses = self.forward_pts_train(img_feats,points_raw,points_gt,points_mis, gt_bboxes_3d, gt_labels_3d, img_metas, gt_bboxes_ignore)
 
         return losses
 
-    def forward_test(self, img_metas, img=None, **kwargs):
+    def forward_test(self, img_metas, img=None, points=None, points_raw =None, points_gt=None,points_mis=None, **kwargs):
         for var, name in [(img_metas, 'img_metas')]:
             if not isinstance(var, list):
                 raise TypeError('{} must be a list, but got {}'.format(
                     name, type(var)))
         img = [img] if img is None else img
+        # return self.simple_test(img_metas[0], img[0], points[0],points_raw[0],points_gt[0],points_mis[0], **kwargs)
         return self.simple_test(img_metas[0], img[0], **kwargs)
 
-    def simple_test_pts(self, x, img_metas, rescale=False):
-        outs = self.pts_bbox_head(x, img_metas)
+    def simple_test_pts(self, x, points_raw,points_gt,points_mis,img_metas, rescale=False):
+        outs = self.pts_bbox_head(x,img_metas ,points_raw,points_gt,points_mis)
         bbox_list = self.pts_bbox_head.get_bboxes(outs, img_metas[0], rescale=rescale)
 
         bbox_results = [
@@ -235,10 +242,10 @@ class SparseBEV(MVXTwoStageDetector):
 
         return bbox_results
     
-    def simple_test(self, img_metas, img=None, rescale=False):
+    def simple_test(self, img_metas, img=None, points=None, points_raw =None, points_gt=None,points_mis=None ,rescale=False):
         world_size = get_dist_info()[1]
         if world_size == 1:  # online
-            return self.simple_test_online(img_metas, img, rescale)
+            return self.simple_test_online(img_metas, img, points,points_raw,points_gt,points_mis, rescale)
         else:  # offline
             return self.simple_test_offline(img_metas, img, rescale)
 
@@ -252,7 +259,7 @@ class SparseBEV(MVXTwoStageDetector):
 
         return bbox_list
 
-    def simple_test_online(self, img_metas, img=None, rescale=False):
+    def simple_test_online(self, img_metas, img=None, points=None, points_raw =None, points_gt=None,points_mis=None, rescale=False):
         self.fp16_enabled = False
         assert len(img_metas) == 1  # batch_size = 1
 
@@ -314,7 +321,7 @@ class SparseBEV(MVXTwoStageDetector):
 
         # run detector
         bbox_list = [dict() for _ in range(1)]
-        bbox_pts = self.simple_test_pts(img_feats, img_metas, rescale=rescale)
+        bbox_pts = self.simple_test_pts(img_feats,points_raw,points_gt,points_mis,img_metas, rescale=rescale)
         for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
             result_dict['pts_bbox'] = pts_bbox
 

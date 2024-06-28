@@ -3,7 +3,9 @@ import numpy as np
 from mmdet.datasets import DATASETS
 from mmdet3d.datasets import NuScenesDataset
 from pyquaternion import Quaternion
-
+# from .pipelines import Compose
+# from mmdet3d.datasets.nuscenes_dataset import Compose
+# from mmdet3d.datasets.custom_3d import Custom3DDataset
 
 @DATASETS.register_module()
 class CustomNuScenesDataset(NuScenesDataset):
@@ -50,12 +52,15 @@ class CustomNuScenesDataset(NuScenesDataset):
             ego2global_rotation=ego2global_rotation,
             lidar2ego_translation=lidar2ego_translation,
             lidar2ego_rotation=lidar2ego_rotation,
+            pts_filename=info['lidar_path'],
         )
 
         if self.modality['use_camera']:
             img_paths = []
             img_timestamps = []
             lidar2img_rts = []
+            lidar2cam_rts = []
+            cam2imgs = []
 
             for _, cam_info in info['cams'].items():
                 img_paths.append(os.path.relpath(cam_info['data_path']))
@@ -74,11 +79,15 @@ class CustomNuScenesDataset(NuScenesDataset):
                 viewpad[:intrinsic.shape[0], :intrinsic.shape[1]] = intrinsic
                 lidar2img_rt = (viewpad @ lidar2cam_rt.T)
                 lidar2img_rts.append(lidar2img_rt)
+                lidar2cam_rts.append(lidar2cam_rt)
+                cam2imgs.append(intrinsic)
 
             input_dict.update(dict(
                 img_filename=img_paths,
                 img_timestamp=img_timestamps,
                 lidar2img=lidar2img_rts,
+                lidar2cam=lidar2cam_rts,
+                cam2img=cam2imgs,
             ))
 
         if not self.test_mode:

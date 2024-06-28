@@ -9,7 +9,57 @@ from mmdet3d.core.bbox.coders import build_bbox_coder
 from mmdet3d.core.bbox.structures.lidar_box3d import LiDARInstance3DBoxes
 from .bbox.utils import normalize_bbox, encode_bbox
 from .utils import VERSION
+import torch.nn.functional as F
 
+class PointNet(nn.Module):
+    def __init__(self):
+        super(PointNet, self).__init__()
+        self.conv1 = nn.Conv1d(3, 64, 1)
+        self.conv2 = nn.Conv1d(64, 128, 1)
+        self.conv3 = nn.Conv1d(128, 1024, 1)
+        self.fc1 = nn.Linear(1024, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, 900 * 256)  # 900 * 10 출력 크기
+        
+    def forward(self, x):
+        B,N,C = x.shape
+        x = x.view(B,N,C).permute(0,2,1)
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
+        x = torch.relu(self.conv3(x))
+        x, _ = torch.max(x, 2)
+        x = x.view(-1, 1024)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        x = x.view(-1, 900, 256)  # [1, 900, 10] 형태로 변환
+        return x
+    
+    def farthest_point_sampling(self, xyz, npoints=900):
+        """
+        Input:
+            xyz: pointcloud data, [B, N, C] 형태의 텐서
+            npoints: 샘플링할 점의 개수
+        Return:
+            centroids: 샘플링된 점들의 인덱스, [B, npoints] 형태의 텐서
+        """
+        B,N,C = xyz.shape
+        xyz =xyz.view(B,N,C)
+        centroids = torch.zeros(B, npoints, dtype=torch.long).to(xyz.device)
+        distance = torch.ones(B, N).to(xyz.device) * 1e10
+        farthest = torch.randint(0, N, (B,), dtype=torch.long).to(xyz.device)
+        batch_indices = torch.arange(B, dtype=torch.long).to(xyz.device)
+        
+        for i in range(npoints):
+            centroids[:, i] = farthest
+            centroid = xyz[batch_indices, farthest, :].view(B, 1, C)
+            dist = torch.sum((xyz - centroid) ** 2, -1)
+            mask = dist < distance
+            distance[mask] = dist[mask]
+            farthest = torch.max(distance, -1)[1]
+        
+        sampled_points = xyz[batch_indices.unsqueeze(-1), centroids]
+        return sampled_points,centroids
 
 @HEADS.register_module()
 class SparseBEVHead(DETRHead):
@@ -39,6 +89,7 @@ class SparseBEVHead(DETRHead):
         self.code_weights = nn.Parameter(torch.tensor(self.code_weights), requires_grad=False)
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.pc_range = self.bbox_coder.pc_range
+        # self.pointNet = PointNet()
 
         self.dn_enabled = query_denoising
         self.dn_group_num = query_denoising_groups
@@ -66,14 +117,46 @@ class SparseBEVHead(DETRHead):
     def init_weights(self):
         self.transformer.init_weights()
 
-    def forward(self, mlvl_feats, img_metas):
-        query_bbox = self.init_query_bbox.weight.clone()  # [Q, 10]
+    def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis):
+        query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
         #query_bbox[..., :3] = query_bbox[..., :3].sigmoid()
 
         # query denoising
         B = mlvl_feats[0].shape[0]
-        query_bbox, query_feat, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox, self.label_enc, img_metas)
+        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas)
+        # reduce_point_raw , _ = self.pointNet.farthest_point_sampling(points_raw,900)
+        # query_feat = self.pointNet(points_raw)
+        query_feat = query_feat_raw
+        
+        ####  to-do : 필요 없는 코드 ##########
+        # reduce_point_raw = points_gt
+        # query_grid = query_bbox_raw[:,:,:2].unsqueeze(1)
+        # # norm_points = (reduce_point_raw[:,:,:,:2]-0.5)*2 # -1~1 정규화 : 정규화 안됨
 
+        # # reduce_point_raw의 각 차원에 대해 최소값과 최대값을 계산
+        # min_vals = reduce_point_raw[:,:,:,:2].min(dim=0, keepdim=True)[0]
+        # min_vals = min_vals.min(dim=1, keepdim=True)[0]
+        # min_vals = min_vals.min(dim=2, keepdim=True)[0]
+
+        # max_vals = reduce_point_raw[:,:,:,:2].max(dim=0, keepdim=True)[0]
+        # max_vals = max_vals.max(dim=1, keepdim=True)[0]
+        # max_vals = max_vals.max(dim=2, keepdim=True)[0]
+
+        # # 최소값과 최대값을 이용해 -1과 1 사이로 정규화
+        # norm_points = 2 * (reduce_point_raw[:,:,:,:2] - min_vals) / (max_vals - min_vals) - 1
+  
+        # norm_points_expanded = norm_points.permute(0,3,1,2)
+        # sampled_points = F.grid_sample(norm_points_expanded, query_grid ,mode='bilinear', align_corners=True)
+        # sampled_points = sampled_points.permute(0, 2, 3, 1).squeeze(1)
+        
+        # reduce_point_mis,_ = self.pointNet.farthest_point_sampling(points_gt)
+        # mis_point_query= self.pointNet(reduce_point_mis)
+        # query_bbox = torch.cat((query_bbox_raw , mis_point_query),dim=1)
+        # query_bbox_new[:, :, :2] = sampled_points
+        
+        query_bbox_new = query_bbox_raw.clone()
+        query_bbox = query_bbox_raw 
+        
         cls_scores, bbox_preds = self.transformer(
             query_bbox,
             query_feat,
@@ -123,8 +206,11 @@ class SparseBEVHead(DETRHead):
 
         device = init_query_bbox.device
         indicator0 = torch.zeros([self.num_query, 1], device=device)
-        init_query_feat = label_enc.weight[self.num_classes].repeat(self.num_query, 1)
-        init_query_feat = torch.cat([init_query_feat, indicator0], dim=1)
+        init_query_feat_raw = label_enc.weight[self.num_classes].repeat(self.num_query, 1)
+        init_query_feat_raw = torch.cat([init_query_feat_raw, indicator0], dim=1)
+        # dummy = torch.zeros_like(init_query_feat_raw)
+        # init_query_feat = torch.cat([init_query_feat_raw,dummy] , dim =0)
+        init_query_feat = init_query_feat_raw
 
         if self.training and self.dn_enabled:
             targets = [{
