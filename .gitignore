@@ -51,3 +51,4 @@ checkpoints
 pretrain
 *.png
 *.jpg
+AdaptiveMixing_nn
