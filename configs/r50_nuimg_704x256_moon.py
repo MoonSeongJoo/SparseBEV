@@ -72,7 +72,7 @@ model = dict(
         num_classes=10,
         in_channels=embed_dims,
         num_query=num_query,
-        query_denoising=False,
+        query_denoising=True,
         query_denoising_groups=10,
         code_size=10,
         code_weights=[2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
@@ -254,4 +254,4 @@ log_config = dict(
 eval_config = dict(interval=total_epochs)
 
 # other flags
-debug = False
+debug = True

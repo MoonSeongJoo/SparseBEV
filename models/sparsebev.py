@@ -228,8 +228,8 @@ class SparseBEV(MVXTwoStageDetector):
                 raise TypeError('{} must be a list, but got {}'.format(
                     name, type(var)))
         img = [img] if img is None else img
-        # return self.simple_test(img_metas[0], img[0], points[0],points_raw[0],points_gt[0],points_mis[0], **kwargs)
-        return self.simple_test(img_metas[0], img[0], **kwargs)
+        return self.simple_test(img_metas[0], img[0], points[0],points_raw[0],points_gt[0],points_mis[0], **kwargs)
+        # return self.simple_test(img_metas[0], img[0], **kwargs)
 
     def simple_test_pts(self, x, points_raw,points_gt,points_mis,img_metas, rescale=False):
         outs = self.pts_bbox_head(x,img_metas ,points_raw,points_gt,points_mis)
