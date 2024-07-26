@@ -44,6 +44,17 @@ class CustomNuScenesDataset(NuScenesDataset):
         ego2global_rotation = Quaternion(ego2global_rotation).rotation_matrix
         lidar2ego_rotation = Quaternion(lidar2ego_rotation).rotation_matrix
 
+        # lidar --> vehicel(ego)
+        lidar_to_ego_translation = lidar2ego_rotation @ lidar2ego_translation
+        lidar_to_ego_rotation = lidar2ego_rotation
+        # vehicle(ego) --> global 
+        lidar_to_global_translation = ego2global_rotation @ lidar_to_ego_translation + ego2global_translation
+        lidar_to_global_rotation = ego2global_rotation @ lidar_to_ego_rotation
+        # 4x4 호모지니어스 변환 행렬 생성
+        lidar2global_transform = np.eye(4)  # 4x4 단위 행렬 생성
+        lidar2global_transform[:3, :3] = lidar_to_global_rotation
+        lidar2global_transform[:3, 3] = lidar_to_global_translation
+
         input_dict = dict(
             sample_idx=info['token'],
             sweeps={'prev': sweeps_prev, 'next': sweeps_next},
@@ -53,6 +64,7 @@ class CustomNuScenesDataset(NuScenesDataset):
             lidar2ego_translation=lidar2ego_translation,
             lidar2ego_rotation=lidar2ego_rotation,
             pts_filename=info['lidar_path'],
+            lidar2global = lidar2global_transform,
         )
 
         if self.modality['use_camera']:

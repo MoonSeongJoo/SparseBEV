@@ -82,8 +82,9 @@ class PointNet(nn.Module):
         x = F.relu(self.bn4(self.fc1(x)))
         x = F.relu(self.bn5(self.fc2(x)))
         x = self.fc3(x)
-        x = x.view(-1,900,256) #[1,900(or 1210),10] 형태로 변환
-        # x = x.view(-1,900,10) # classification 형태로 변환
+        # x = x.view(-1,900,256) #[1,900(or 1210),10] 형태로 변환
+        x = x.view(B,-1,256) #[1,900(or 1210),10] 형태로 변환
+        # x = x.view(B,-1,10) # classification 형태로 변환
         
         return x
     
@@ -152,30 +153,97 @@ class SparseBEVHead(DETRHead):
     def _init_layers(self):
         self.init_query_bbox = nn.Embedding(self.num_query, 10)  # (x, y, z, w, l, h, sin, cos, vx, vy)
         self.label_enc = nn.Embedding(self.num_classes + 1, self.embed_dims - 1)  # DAB-DETR
-        self.fc = nn.Linear(self.embed_dims*2,self.embed_dims)
+        # self.fc = nn.Linear(self.embed_dims*2,self.embed_dims) # DDP error : 안쓰여지는 network
 
         nn.init.zeros_(self.init_query_bbox.weight[:, 2:3])
         nn.init.zeros_(self.init_query_bbox.weight[:, 8:10])
         nn.init.constant_(self.init_query_bbox.weight[:, 5:6], 1.5)
 
-        grid_size = int(math.sqrt(self.num_query))
-        assert grid_size * grid_size == self.num_query
-        x = y = torch.arange(grid_size)
+        self.grid_size = int(math.sqrt(self.num_query))
+        assert self.grid_size * self.grid_size == self.num_query
+        x = y = torch.arange(self.grid_size)
         xx, yy = torch.meshgrid(x, y, indexing='ij')  # [0, grid_size - 1]
         xy = torch.cat([xx[..., None], yy[..., None]], dim=-1)
-        xy = (xy + 0.5) / grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
+        xy = (xy + 0.5) / self.grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
         with torch.no_grad():
             self.init_query_bbox.weight[:, :2] = xy.reshape(-1, 2)  # [Q, 2]
 
     def init_weights(self):
         self.transformer.init_weights()
+    
+    # def lidar_to_bev(self, global_points, resolution=100, bev_size=(30, 30), z_limit=(-10.0, 20.0)):
+    #     """
+    #     글로벌 좌표계의 Lidar 포인트를 BEV 형식으로 변환합니다.
 
-    def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis):
+    #     :param global_points: 글로벌 좌표계의 포인트 (BxN tensor, [x, y, z])
+    #     :param resolution: BEV 해상도
+    #     :param bev_size: BEV 크기 (height, width) 튜플
+    #     :param z_limit: Z축 제한 (min, max)
+    #     :return: BEV 텐서 (B x H x W)
+    #     """
+    #     # BEV 텐서 초기화
+    #     bev = torch.zeros((global_points.size(0), bev_size[0], bev_size[1],3))
+
+    #     for b in range(global_points.size(0)):  # 배치 크기만큼 반복
+    #         x = global_points[b, :, 0]
+    #         y = global_points[b, :, 1]
+    #         z = global_points[b, :, 2]
+
+    #         # x, y 좌표를 BEV 픽셀 좌표로 변환
+    #         x_pixel = ((x / resolution) + (bev_size[1] / 2)).long()
+    #         y_pixel = ((y / resolution) + (bev_size[0] / 2)).long()
+
+    #         # Z축 제한 적용
+    #         z_mask = (z >= z_limit[0]) & (z <= z_limit[1])
+    #         x_pixel = x_pixel[z_mask]
+    #         y_pixel = y_pixel[z_mask]
+    #         z = z[z_mask]
+
+    #         # BEV 텐서에 Z값을 할당
+    #         for i in range(len(x_pixel)):
+    #             if 0 <= x_pixel[i] < bev_size[1] and 0 <= y_pixel[i] < bev_size[0]:
+    #                 # bev[b, y_pixel[i], x_pixel[i]] = z[i]
+    #                 # x, y, z 값을 각각의 채널에 할당
+    #                 bev[b, y_pixel[i], x_pixel[i], 0] = x[i]  # x값
+    #                 bev[b, y_pixel[i], x_pixel[i], 1] = y[i]  # y값
+    #                 bev[b, y_pixel[i], x_pixel[i], 2] = z[i]  # z값
+
+    #     return bev
+    # def map_global_points_to_bev(self, global_points, bev_grid, grid_size=(30, 30)):
+    #     """
+    #     global_points를 bev_grid에 매핑합니다.
+
+    #     :param global_points: shape [B, N, 3]의 텐서 (x, y, z 좌표)
+    #     :param bev_grid: shape [900, 2]의 텐서 (x, y 좌표)
+    #     :param grid_size: BEV 그리드 크기 (height, width)
+    #     :return: 매핑된 포인트들
+    #     """
+    #     B, N, _ = global_points.shape
+    #     # bev_grid를 [-1, 1] 범위로 변환
+    #     bev_grid_normalized = (bev_grid / (grid_size[0] - 1)) * 2 - 1  # [0, grid_size-1] -> [-1, 1]
+        
+    #     # bev_grid를 (1, H, W, 2) 형태로 변환
+    #     bev_grid_tensor = bev_grid_normalized.view(1, grid_size[0], grid_size[1], 2)
+
+    #     # global_points를 (B, N, 1, 3) 형태로 변환
+    #     global_points_tensor = global_points.view(B, N, 1, 3)
+
+    #     # x, y 좌표를 사용하여 z값을 매핑합니다. 
+    #     # grid_sample은 입력이 4D이어야 하므로, global_points_tensor를 4D로 변환합니다.
+    #     mapped_points = F.grid_sample(global_points_tensor, bev_grid_tensor, mode='bilinear', align_corners=True)
+
+    #     # 결과를 (B, 1, 3) 형태로 변환 후 squeeze하여 (B, 3)으로 만듭니다.
+    #     mapped_points = mapped_points.squeeze(2)  # (B, N, 3) -> (B, 3)
+        
+    #     return mapped_points
+
+    def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points):
         query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
+        query_bbox_raw[:,:2] = global_points.squeeze(0)
         #query_bbox[..., :3] = query_bbox[..., :3].sigmoid()
-
         # query denoising
         B = mlvl_feats[0].shape[0]
+
         # reduce_point_raw , _ = self.pointNet.farthest_point_sampling(points_raw,30000)
         query_feat_pc = self.pointNet(points_raw)
         query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas,query_feat_pc)
@@ -327,7 +395,7 @@ class SparseBEVHead(DETRHead):
             input_query_pc = torch.cat([batch_dn_query_feat,query_feat_pc],dim=1)
             input_query_combined = torch.cat([input_query_feat_raw,input_query_pc],dim=2)
 
-            aggrated_query_feat = self.fc(input_query_combined)
+            # aggrated_query_feat = self.fc(input_query_combined)
             input_query_feat = input_query_pc
 
             if len(known_num):

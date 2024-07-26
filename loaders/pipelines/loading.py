@@ -33,7 +33,7 @@ def compose_lidar2img(ego2global_translation_curr,
     viewpad[:cam_intrinsic_past.shape[0], :cam_intrinsic_past.shape[1]] = cam_intrinsic_past
     lidar2img = (viewpad @ lidar2cam_rt.T).astype(np.float32)
 
-    return lidar2img , lidar2cam_rt ,cam_intrinsic_past
+    return lidar2img , lidar2cam_rt ,cam_intrinsic_past 
 
 
 @PIPELINES.register_module()
@@ -69,6 +69,7 @@ class LoadMultiViewImageFromMultiSweeps(object):
                     results['lidar2img'].append(np.copy(results['lidar2img'][j]))
                     results['lidar2cam'].append(np.copy(results['lidar2cam'][j]))
                     results['cam2img'].append(np.copy(results['cam2img'][j]))
+                
         else:
             if self.test_mode:
                 interval = self.test_interval
@@ -107,7 +108,7 @@ class LoadMultiViewImageFromMultiSweeps(object):
                     results['lidar2img'].append(lidar2img_np)
                     results['lidar2cam'].append(lidar2cam_np)
                     results['cam2img'].append(cam_intrinsic_past_np)
-
+         
         return results
 
     def load_online(self, results):
@@ -128,6 +129,7 @@ class LoadMultiViewImageFromMultiSweeps(object):
                     results['lidar2img'].append(np.copy(results['lidar2img'][j]))
                     results['lidar2cam'].append(np.copy(results['lidar2cam'][j]))
                     results['cam2img'].append(np.copy(results['cam2img'][j]))
+
         else:
             interval = self.test_interval
             choices = [(k + 1) * interval - 1 for k in range(self.sweeps_num)]
@@ -537,10 +539,12 @@ class PointToMultiViewDepth_moon(object):
     def __init__(self, grid_config, downsample=1):
         self.downsample = downsample
         self.grid_config = grid_config
+        self.num_points =900
+        self.grid_size = 30
     
     def __call__(self, results):
         raw_points_lidar = results['points']
-
+        
         points_lidar = trim_corrs(raw_points_lidar)
 
         point_gts =[]
@@ -606,11 +610,37 @@ class PointToMultiViewDepth_moon(object):
         
         points2img_gt = torch.stack(point_gts)
         points2img_mis = torch.stack(point_mis)
+        raw_points_tensor = raw_points_lidar.tensor[:,:3]
+        reduced_points_tensor = points_lidar.tensor[:, :3]
+
+        # 라이다 포인트를 호모지니어스 좌표로 변환 (Nx4 tensor)
+        lidar2global = torch.tensor(results['lidar2global'],dtype=torch.float32)
+        ones = torch.ones(reduced_points_tensor.shape[0], 1)  # (N, 1) 크기의 텐서 생성
+        lidar_points_homogeneous = torch.cat((reduced_points_tensor, ones), dim=1)  # (N, 4)로 변환
+        # 글로벌 좌표계로 변환
+        global_points_homogeneous = torch.matmul(lidar_points_homogeneous, lidar2global.T)  # (N, 4)
+        # 호모지니어스 좌표에서 3D 좌표로 변환
+        global_points = global_points_homogeneous[:, :3]  # (N, 3)로 변환
+
+        indices = torch.randint(0, global_points.shape[0], (self.num_points,))
+        selected_points = global_points[indices]  # shape: [900, 3]
+        sorted_points, sorted_indices = torch.sort(selected_points, dim=0)
+
+        # x, y 좌표만 추출
+        xy_points = sorted_points[:, :2]  # shape: [900, 2]
+        z_points = sorted_points[:, 2]
+        # xy 좌표를 grid_size에 맞게 정규화
+        grid_xy = (xy_points + 0.5) / self.grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
+        # grid_size를 다시 [0,1]로 정규화
+        min_val = grid_xy.min(dim=0)[0]  # 각 열의 최소값
+        max_val = grid_xy.max(dim=0)[0]  # 각 열의 최대값
+        normalized_grid_xy = (grid_xy - min_val) / (max_val - min_val)
 
         results['points_gt']  = points2img_gt
         results['points_mis'] = points2img_mis
-        results['reduce_points_raw'] = points_lidar.tensor[:, :3]
-        results['points_raw'] = raw_points_lidar.tensor[:,:3]
+        results['reduce_points_raw'] = reduced_points_tensor
+        results['points_raw'] = raw_points_tensor
+        results['global_points'] = normalized_grid_xy
 
         return results
 
