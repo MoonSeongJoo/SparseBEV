@@ -636,11 +636,16 @@ class PointToMultiViewDepth_moon(object):
         max_val = grid_xy.max(dim=0)[0]  # 각 열의 최대값
         normalized_grid_xy = (grid_xy - min_val) / (max_val - min_val)
 
+        min_z = torch.min(z_points)
+        max_z = torch.max(z_points)
+        normalized_z = (z_points -min_z) / (max_z -min_z)
+
         results['points_gt']  = points2img_gt
         results['points_mis'] = points2img_mis
         results['reduce_points_raw'] = reduced_points_tensor
         results['points_raw'] = raw_points_tensor
         results['global_points'] = normalized_grid_xy
+        results['z_points'] = normalized_z
 
         return results
 

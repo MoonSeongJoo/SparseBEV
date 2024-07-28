@@ -136,6 +136,7 @@ class SparseBEV(MVXTwoStageDetector):
                           points_gt,
                           points_mis,
                           global_points,
+                          z_points,
                           gt_bboxes_3d,
                           gt_labels_3d,
                           img_metas,
@@ -153,7 +154,7 @@ class SparseBEV(MVXTwoStageDetector):
         Returns:
             dict: Losses of each branch.
         """
-        outs = self.pts_bbox_head(pts_feats, img_metas,points_raw, points_gt,points_mis,global_points)
+        outs = self.pts_bbox_head(pts_feats, img_metas,points_raw, points_gt,points_mis,global_points,z_points)
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
 
@@ -181,6 +182,7 @@ class SparseBEV(MVXTwoStageDetector):
                       points_gt=None,
                       points_mis=None,
                       global_points=None,
+                      z_points=None,
                       img_metas=None,
                       gt_bboxes_3d=None,
                       gt_labels_3d=None,
@@ -220,7 +222,7 @@ class SparseBEV(MVXTwoStageDetector):
             img_metas[i]['gt_bboxes_3d'] = gt_bboxes_3d[i]
             img_metas[i]['gt_labels_3d'] = gt_labels_3d[i]
 
-        losses = self.forward_pts_train(img_feats,points_raw,points_gt,points_mis,global_points, gt_bboxes_3d, gt_labels_3d, img_metas, gt_bboxes_ignore)
+        losses = self.forward_pts_train(img_feats,points_raw,points_gt,points_mis,global_points,z_points, gt_bboxes_3d, gt_labels_3d, img_metas, gt_bboxes_ignore)
 
         return losses
 

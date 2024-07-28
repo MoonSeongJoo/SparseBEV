@@ -237,9 +237,10 @@ class SparseBEVHead(DETRHead):
         
     #     return mapped_points
 
-    def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points):
+    def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points,z_points):
         query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
         query_bbox_raw[:,:2] = global_points.squeeze(0)
+        query_bbox_raw[:,2] = z_points.squeeze(0)
         #query_bbox[..., :3] = query_bbox[..., :3].sigmoid()
         # query denoising
         B = mlvl_feats[0].shape[0]
