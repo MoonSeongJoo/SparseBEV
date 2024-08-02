@@ -236,18 +236,36 @@ class SparseBEVHead(DETRHead):
     #     mapped_points = mapped_points.squeeze(2)  # (B, N, 3) -> (B, 3)
         
     #     return mapped_points
+    def query_sync (self,pc_feature,grid):
+        B,N,C =pc_feature.shape
+        # pc_feature를 (N, C, H, W) 형태로 변환
+        pc_feature = pc_feature.permute(0, 2, 1).unsqueeze(3)  # (Batch, C, H, W) -> (1, 256, 900, 1)
+
+        # grid를 (N, H, W, 2) 형태로 변환
+        grid = grid.unsqueeze(0).unsqueeze(2)  # (Batch, H, 1, 2) -> (1, 900, 1, 2)
+
+        # grid의 값을 [-1, 1] 범위로 정규화
+        # 예시로 450을 사용하여 정규화
+        grid = grid * 2 - 1  # [0, 1] -> [-1, 1]로 변환
+
+        # grid_sample을 사용하여 pc_feature 맵핑
+        output = F.grid_sample(pc_feature, grid, mode='bilinear', padding_mode='border') # (B,C,H,W)
+        return output.view(B,C,-1).permute(0,2,1)
 
     def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points,z_points):
         query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
-        query_bbox_raw[:,:2] = global_points.squeeze(0)
-        query_bbox_raw[:,2] = z_points.squeeze(0)
+        grid = query_bbox_raw[:,:2]
+        # query_bbox_raw[:,:2] = global_points.squeeze(0)
+        # query_bbox_raw[:,2] = z_points.squeeze(0)
         #query_bbox[..., :3] = query_bbox[..., :3].sigmoid()
         # query denoising
         B = mlvl_feats[0].shape[0]
 
         # reduce_point_raw , _ = self.pointNet.farthest_point_sampling(points_raw,30000)
         query_feat_pc = self.pointNet(points_raw)
-        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas,query_feat_pc)
+        query_pc = self.query_sync(query_feat_pc,grid) # (B,N,C)
+        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas,query_pc)
+        # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas)
         
         query_feat = query_feat_raw 
         
@@ -323,6 +341,7 @@ class SparseBEVHead(DETRHead):
         return outs
 
     def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas,query_feat_pc):
+    # def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas):
         # mostly borrowed from:
         #  - https://github.com/IDEA-Research/DN-DETR/blob/main/models/DN_DAB_DETR/dn_components.py
         #  - https://github.com/megvii-research/PETR/blob/main/projects/mmdet3d_plugin/models/dense_heads/petrv2_dnhead.py
@@ -390,11 +409,11 @@ class SparseBEVHead(DETRHead):
             dn_query_bbox = torch.zeros([dn_pad_size, init_query_bbox.shape[-1]], device=device)
             dn_query_feat = torch.zeros([dn_pad_size, self.embed_dims], device=device)
             input_query_bbox = torch.cat([dn_query_bbox, init_query_bbox], dim=0).repeat(batch_size, 1, 1)
-            input_query_feat_raw = torch.cat([dn_query_feat, init_query_feat], dim=0).repeat(batch_size, 1, 1)
+            # input_query_feat_raw = torch.cat([dn_query_feat, init_query_feat], dim=0).repeat(batch_size, 1, 1)
             batch_dn_query_feat =dn_query_feat.repeat(batch_size, 1, 1)
 
             input_query_pc = torch.cat([batch_dn_query_feat,query_feat_pc],dim=1)
-            input_query_combined = torch.cat([input_query_feat_raw,input_query_pc],dim=2)
+            # input_query_combined = torch.cat([input_query_feat_raw,input_query_pc],dim=2)
 
             # aggrated_query_feat = self.fc(input_query_combined)
             input_query_feat = input_query_pc
