@@ -43,7 +43,7 @@ class TNet(nn.Module):
         return x
 
 class PointNet(nn.Module):
-    def __init__(self):
+    def __init__(self, num_queries=900 , is_contents=False):
         super(PointNet, self).__init__()
         self.tnet1 = TNet(k=3)
         self.conv1 = nn.Conv1d(3, 64, 1)
@@ -52,8 +52,13 @@ class PointNet(nn.Module):
         self.tnet2 = TNet(k=64)
         self.fc1 = nn.Linear(1024, 512)
         self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, 900 * 256)  # numuber of query (training case : add denosing :1210) * embedded dim
-        # self.fc3 = nn.Linear(256, 900*10)  # just classification #of class : 10
+        self.is_contents = is_contents
+        
+        if is_contents:
+            self.fc3 = nn.Linear(256, num_queries * 256)  # numuber of query (training case : add denosing :1210) * embedded dim
+        else: 
+            self.fc3 = nn.Linear(256, num_queries * 10)  # just classification #of class : 10
+        
         self.bn1 = nn.BatchNorm1d(64)
         self.bn2 = nn.BatchNorm1d(128)
         self.bn3 = nn.BatchNorm1d(1024)
@@ -82,9 +87,12 @@ class PointNet(nn.Module):
         x = F.relu(self.bn4(self.fc1(x)))
         x = F.relu(self.bn5(self.fc2(x)))
         x = self.fc3(x)
-        # x = x.view(-1,900,256) #[1,900(or 1210),10] 형태로 변환
-        x = x.view(B,-1,256) #[1,900(or 1210),10] 형태로 변환
-        # x = x.view(B,-1,10) # classification 형태로 변환
+
+        # fc3의 출력 형태에 따라 reshape
+        if self.is_contents:
+            x = x.view(B, -1, 256)  # [B, num_queries, 10] 형태로 변환
+        else:
+            x = x.view(B, -1, 10)  # [B, num_queries, 256] 형태로 변환
         
         return x
     
@@ -142,7 +150,8 @@ class SparseBEVHead(DETRHead):
         self.code_weights = nn.Parameter(torch.tensor(self.code_weights), requires_grad=False)
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.pc_range = self.bbox_coder.pc_range
-        self.pointNet = PointNet()
+        self.pointNet_contents = PointNet(num_queries=900 , is_contents=True)
+        self.pointNet_position = PointNet(num_queries=900 , is_contents=False)
 
         self.dn_enabled = query_denoising
         self.dn_group_num = query_denoising_groups
@@ -251,6 +260,20 @@ class SparseBEVHead(DETRHead):
         # grid_sample을 사용하여 pc_feature 맵핑
         output = F.grid_sample(pc_feature, grid, mode='bilinear', padding_mode='border') # (B,C,H,W)
         return output.view(B,C,-1).permute(0,2,1)
+    
+    def calc_bbox_position (self,query_pc_position):
+        
+        normalized_query_pc_position = query_pc_position.clone()
+        # x, y 좌표에 대해 개별적으로 정규화
+        min_val = query_pc_position[:,:,0].min()
+        max_val = query_pc_position[:,:,0].max()
+        normalized_query_pc_position[:,:,0] = (query_pc_position[:,:,0] - min_val) / (max_val - min_val)
+        min_val = query_pc_position[:,:,1].min()
+        max_val = query_pc_position[:,:,1].max()
+        normalized_query_pc_position[:,:,1] = (query_pc_position[:,:,1] - min_val) / (max_val - min_val)
+        
+        return normalized_query_pc_position
+
 
     def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points,z_points):
         query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
@@ -262,9 +285,12 @@ class SparseBEVHead(DETRHead):
         B = mlvl_feats[0].shape[0]
 
         # reduce_point_raw , _ = self.pointNet.farthest_point_sampling(points_raw,30000)
-        query_feat_pc = self.pointNet(points_raw)
-        query_pc = self.query_sync(query_feat_pc,grid) # (B,N,C)
-        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas,query_pc)
+        query_feat_pc = self.pointNet_contents(points_raw)
+        query_pc_contents = self.query_sync(query_feat_pc,grid) # (B,N,C)
+        query_position_pc = self.pointNet_position(points_raw)
+        query_pc_position = self.calc_bbox_position(query_position_pc)
+        # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas,query_pc_contents)
+        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position, self.label_enc, img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas)
         
         query_feat = query_feat_raw 
@@ -352,7 +378,8 @@ class SparseBEVHead(DETRHead):
         init_query_feat_raw = torch.cat([init_query_feat_raw, indicator0], dim=1)
         
         init_query_feat = init_query_feat_raw
-
+        query_bbox      = init_query_bbox.clone()
+        
         if self.training and self.dn_enabled:
             targets = [{
                 'bboxes': torch.cat([m['gt_bboxes_3d'].gravity_center,
@@ -388,7 +415,8 @@ class SparseBEVHead(DETRHead):
                 # known_bbox_expand[..., 3:6] += torch.mul(rand_prob[..., 3:6], wlh) * self.dn_bbox_noise_scale
                 # known_bbox_expand[..., 6:7] += torch.mul(rand_prob[..., 6:7], 3.14159) * self.dn_bbox_noise_scale
 
-            known_bbox_expand = encode_bbox(known_bbox_expand, self.pc_range)
+            # known_bbox_expand = encode_bbox(known_bbox_expand, self.pc_range)
+            known_bbox_expand = encode_bbox(known_bbox_expand.clone(), self.pc_range)  # Create a clone before encoding
             known_bbox_expand[..., 0:3].clamp_(min=0.0, max=1.0)
             # nn.init.constant(known_bbox_expand[..., 8:10], 0.0)
 
@@ -396,7 +424,12 @@ class SparseBEVHead(DETRHead):
             if self.dn_label_noise_scale > 0:
                 p = torch.rand_like(known_labels_expand.float())
                 chosen_indice = torch.nonzero(p < self.dn_label_noise_scale).view(-1)  # usually half of bbox noise
-                new_label = torch.randint_like(chosen_indice, 0, self.num_classes)  # randomly put a new one here
+                ######### original ################
+                # new_label = torch.randint_like(chosen_indice, 0, self.num_classes)  # randomly put a new one here
+                # known_labels_expand.scatter_(0, chosen_indice, new_label)
+
+                new_label = torch.randint(0, self.num_classes, chosen_indice.size(), device=device)  # Corrected this to avoid creating labels under a view
+                known_labels_expand = known_labels_expand.clone()  # Clone before modifying
                 known_labels_expand.scatter_(0, chosen_indice, new_label)
 
             known_feat_expand = label_enc(known_labels_expand)
@@ -406,17 +439,21 @@ class SparseBEVHead(DETRHead):
             # construct final query
             dn_single_pad = int(max(known_num))
             dn_pad_size = int(dn_single_pad * self.dn_group_num)
-            dn_query_bbox = torch.zeros([dn_pad_size, init_query_bbox.shape[-1]], device=device)
+            # dn_query_bbox = torch.zeros([dn_pad_size, init_query_bbox.shape[-1]], device=device)
+            dn_query_bbox = torch.zeros([dn_pad_size, query_bbox.shape[-1]], device=device)
             dn_query_feat = torch.zeros([dn_pad_size, self.embed_dims], device=device)
-            input_query_bbox = torch.cat([dn_query_bbox, init_query_bbox], dim=0).repeat(batch_size, 1, 1)
+            # input_query_bbox = torch.cat([dn_query_bbox, init_query_bbox], dim=0).repeat(batch_size, 1, 1)
             # input_query_feat_raw = torch.cat([dn_query_feat, init_query_feat], dim=0).repeat(batch_size, 1, 1)
             batch_dn_query_feat =dn_query_feat.repeat(batch_size, 1, 1)
+            batch_dn_query_bbox =dn_query_bbox.repeat(batch_size, 1, 1)
 
             input_query_pc = torch.cat([batch_dn_query_feat,query_feat_pc],dim=1)
+            input_query_pc_bbox = torch.cat([batch_dn_query_bbox, query_bbox],dim=1)
             # input_query_combined = torch.cat([input_query_feat_raw,input_query_pc],dim=2)
 
             # aggrated_query_feat = self.fc(input_query_combined)
             input_query_feat = input_query_pc
+            input_query_bbox = input_query_pc_bbox
 
             if len(known_num):
                 map_known_indice = torch.cat([torch.tensor(range(num)) for num in known_num])  # [1,2, 1,2,3]
@@ -448,8 +485,10 @@ class SparseBEVHead(DETRHead):
                 'pad_size': dn_pad_size
             }
         else:
-            input_query_bbox = init_query_bbox.repeat(batch_size, 1, 1)
-            input_query_feat = init_query_feat.repeat(batch_size, 1, 1)
+            # input_query_bbox = init_query_bbox.repeat(batch_size, 1, 1)
+            input_query_bbox = query_bbox
+            # input_query_feat = init_query_feat.repeat(batch_size, 1, 1)
+            input_query_feat = query_feat_pc
             attn_mask = None
             mask_dict = None
 
