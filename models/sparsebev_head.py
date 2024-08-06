@@ -161,7 +161,7 @@ class SparseBEVHead(DETRHead):
 
     def _init_layers(self):
         self.init_query_bbox = nn.Embedding(self.num_query, 10)  # (x, y, z, w, l, h, sin, cos, vx, vy)
-        self.label_enc = nn.Embedding(self.num_classes + 1, self.embed_dims - 1)  # DAB-DETR
+        # self.label_enc = nn.Embedding(self.num_classes + 1, self.embed_dims - 1)  # DAB-DETR
         # self.fc = nn.Linear(self.embed_dims*2,self.embed_dims) # DDP error : 안쓰여지는 network
 
         nn.init.zeros_(self.init_query_bbox.weight[:, 2:3])
@@ -290,7 +290,8 @@ class SparseBEVHead(DETRHead):
         query_position_pc = self.pointNet_position(points_raw)
         query_pc_position = self.calc_bbox_position(query_position_pc)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas,query_pc_contents)
-        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position, self.label_enc, img_metas,query_pc_contents)
+        # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position, self.label_enc, img_metas,query_pc_contents)
+        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position,img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas)
         
         query_feat = query_feat_raw 
@@ -366,18 +367,19 @@ class SparseBEVHead(DETRHead):
 
         return outs
 
-    def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas,query_feat_pc):
+    # def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas,query_feat_pc):
+    def prepare_for_dn_input(self, batch_size, init_query_bbox, img_metas,query_feat_pc):
     # def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas):
         # mostly borrowed from:
         #  - https://github.com/IDEA-Research/DN-DETR/blob/main/models/DN_DAB_DETR/dn_components.py
         #  - https://github.com/megvii-research/PETR/blob/main/projects/mmdet3d_plugin/models/dense_heads/petrv2_dnhead.py
 
         device = init_query_bbox.device
-        indicator0 = torch.zeros([self.num_query, 1], device=device)
-        init_query_feat_raw = label_enc.weight[self.num_classes].repeat(self.num_query, 1)
-        init_query_feat_raw = torch.cat([init_query_feat_raw, indicator0], dim=1)
+        # indicator0 = torch.zeros([self.num_query, 1], device=device)
+        # init_query_feat_raw = label_enc.weight[self.num_classes].repeat(self.num_query, 1)
+        # init_query_feat_raw = torch.cat([init_query_feat_raw, indicator0], dim=1)
         
-        init_query_feat = init_query_feat_raw
+        # init_query_feat = init_query_feat_raw
         query_bbox      = init_query_bbox.clone()
         
         if self.training and self.dn_enabled:
