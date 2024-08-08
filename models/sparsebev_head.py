@@ -151,7 +151,7 @@ class SparseBEVHead(DETRHead):
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.pc_range = self.bbox_coder.pc_range
         self.pointNet_contents = PointNet(num_queries=900 , is_contents=True)
-        self.pointNet_position = PointNet(num_queries=900 , is_contents=False)
+        # self.pointNet_position = PointNet(num_queries=900 , is_contents=False)
 
         self.dn_enabled = query_denoising
         self.dn_group_num = query_denoising_groups
@@ -161,7 +161,7 @@ class SparseBEVHead(DETRHead):
 
     def _init_layers(self):
         self.init_query_bbox = nn.Embedding(self.num_query, 10)  # (x, y, z, w, l, h, sin, cos, vx, vy)
-        # self.label_enc = nn.Embedding(self.num_classes + 1, self.embed_dims - 1)  # DAB-DETR
+        self.label_enc = nn.Embedding(self.num_classes + 1, self.embed_dims - 1)  # DAB-DETR
         # self.fc = nn.Linear(self.embed_dims*2,self.embed_dims) # DDP error : 안쓰여지는 network
 
         nn.init.zeros_(self.init_query_bbox.weight[:, 2:3])
@@ -284,8 +284,8 @@ class SparseBEVHead(DETRHead):
 
 
     def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points,z_points):
-        # query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
-        # grid = query_bbox_raw[:,:2]
+        query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
+        grid = query_bbox_raw[:,:2]
         # query_bbox_raw[:,:2] = global_points.squeeze(0)
         # query_bbox_raw[:,2] = z_points.squeeze(0)
         #query_bbox[..., :3] = query_bbox[..., :3].sigmoid()
@@ -293,15 +293,15 @@ class SparseBEVHead(DETRHead):
         B = mlvl_feats[0].shape[0]
 
         # reduce_point_raw , _ = self.pointNet.farthest_point_sampling(points_raw,30000)
-        query_position_pc = self.pointNet_position(points_raw)
-        query_pc_position = self.calc_bbox_position(query_position_pc)
+        # query_position_pc = self.pointNet_position(points_raw)
+        # query_pc_position = self.calc_bbox_position(query_position_pc)
         query_feat_pc = self.pointNet_contents(points_raw)
-        grid = query_pc_position[:,:,:2]
+        # grid = query_pc_position[:,:,:2]
         query_pc_contents = self.query_sync(query_feat_pc,grid) # (B,N,C)
         
-        # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas,query_pc_contents)
+        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas, query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position, self.label_enc, img_metas,query_pc_contents)
-        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position,img_metas,query_pc_contents)
+        # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw,img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas)
         
         query_feat = query_feat_raw 
@@ -377,8 +377,8 @@ class SparseBEVHead(DETRHead):
 
         return outs
 
-    # def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas,query_feat_pc):
-    def prepare_for_dn_input(self, batch_size, init_query_bbox, img_metas,query_feat_pc):
+    def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas, query_feat_pc):
+    # def prepare_for_dn_input(self, batch_size, init_query_bbox, img_metas, query_feat_pc):
     # def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas):
         # mostly borrowed from:
         #  - https://github.com/IDEA-Research/DN-DETR/blob/main/models/DN_DAB_DETR/dn_components.py
@@ -458,9 +458,10 @@ class SparseBEVHead(DETRHead):
             # input_query_feat_raw = torch.cat([dn_query_feat, init_query_feat], dim=0).repeat(batch_size, 1, 1)
             batch_dn_query_feat =dn_query_feat.repeat(batch_size, 1, 1)
             batch_dn_query_bbox =dn_query_bbox.repeat(batch_size, 1, 1)
+            batch_query_bbox =query_bbox.repeat(batch_size, 1, 1)
 
             input_query_pc = torch.cat([batch_dn_query_feat,query_feat_pc],dim=1)
-            input_query_pc_bbox = torch.cat([batch_dn_query_bbox, query_bbox],dim=1)
+            input_query_pc_bbox = torch.cat([batch_dn_query_bbox, batch_query_bbox],dim=1)
             # input_query_combined = torch.cat([input_query_feat_raw,input_query_pc],dim=2)
 
             # aggrated_query_feat = self.fc(input_query_combined)
