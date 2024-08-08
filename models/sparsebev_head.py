@@ -176,6 +176,7 @@ class SparseBEVHead(DETRHead):
         xy = (xy + 0.5) / self.grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
         with torch.no_grad():
             self.init_query_bbox.weight[:, :2] = xy.reshape(-1, 2)  # [Q, 2]
+            self.grid = xy.reshape(-1, 2)
 
     def init_weights(self):
         self.transformer.init_weights()
@@ -250,12 +251,19 @@ class SparseBEVHead(DETRHead):
         # pc_feature를 (N, C, H, W) 형태로 변환
         pc_feature = pc_feature.permute(0, 2, 1).unsqueeze(3)  # (Batch, C, H, W) -> (1, 256, 900, 1)
 
-        # grid를 (N, H, W, 2) 형태로 변환
-        grid = grid.unsqueeze(0).unsqueeze(2)  # (Batch, H, 1, 2) -> (1, 900, 1, 2)
+        # # grid를 (N, H, W, 2) 형태로 변환
+        # grid = grid.unsqueeze(0).unsqueeze(2)  # (Batch, H, 1, 2) -> (1, 900, 1, 2)
 
         # grid의 값을 [-1, 1] 범위로 정규화
         # 예시로 450을 사용하여 정규화
         grid = grid * 2 - 1  # [0, 1] -> [-1, 1]로 변환
+
+        # # grid 오름차순 정렬
+        # sorted_indices = torch.argsort(grid[:, :, 0], dim=1)  # 첫 번째 열을 기준으로 정렬 인덱스 얻기
+        # grid = grid.gather(1, sorted_indices.unsqueeze(2).expand(B, N, 2))  # 인덱스를 사용하여 grid 재배치
+
+        # grid를 (B, 900, 1, 2) 형태로 변환
+        grid = grid.view(B, N, 1, 2)  # (B, 900, 1, 2)
 
         # grid_sample을 사용하여 pc_feature 맵핑
         output = F.grid_sample(pc_feature, grid, mode='bilinear', padding_mode='border') # (B,C,H,W)
@@ -276,8 +284,8 @@ class SparseBEVHead(DETRHead):
 
 
     def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points,z_points):
-        query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
-        grid = query_bbox_raw[:,:2]
+        # query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
+        # grid = query_bbox_raw[:,:2]
         # query_bbox_raw[:,:2] = global_points.squeeze(0)
         # query_bbox_raw[:,2] = z_points.squeeze(0)
         #query_bbox[..., :3] = query_bbox[..., :3].sigmoid()
@@ -285,10 +293,12 @@ class SparseBEVHead(DETRHead):
         B = mlvl_feats[0].shape[0]
 
         # reduce_point_raw , _ = self.pointNet.farthest_point_sampling(points_raw,30000)
-        query_feat_pc = self.pointNet_contents(points_raw)
-        query_pc_contents = self.query_sync(query_feat_pc,grid) # (B,N,C)
         query_position_pc = self.pointNet_position(points_raw)
         query_pc_position = self.calc_bbox_position(query_position_pc)
+        query_feat_pc = self.pointNet_contents(points_raw)
+        grid = query_pc_position[:,:,:2]
+        query_pc_contents = self.query_sync(query_feat_pc,grid) # (B,N,C)
+        
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position, self.label_enc, img_metas,query_pc_contents)
         query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position,img_metas,query_pc_contents)
