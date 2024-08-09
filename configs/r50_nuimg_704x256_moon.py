@@ -144,7 +144,7 @@ train_pipeline = [
     dict(type='RandomTransformImage', ida_aug_conf=ida_aug_conf, training=True),
     dict(type='GlobalRotScaleTransImage', rot_range=[-0.3925, 0.3925], scale_ratio_range=[0.95, 1.05]),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
-    dict(type='Collect3D', keys=['gt_bboxes_3d', 'gt_labels_3d', 'img' ,'points', 'points_raw','points_gt' ,'points_mis','global_points'], meta_keys=(
+    dict(type='Collect3D', keys=['gt_bboxes_3d', 'gt_labels_3d', 'img' ,'points', 'points_raw','points_gt' ,'points_mis','global_points','z_points'], meta_keys=(
         'filename', 'ori_shape', 'img_shape', 'pad_shape', 'lidar2img', 'img_timestamp'))
 ]
 
@@ -162,14 +162,14 @@ test_pipeline = [
         flip=False,
         transforms=[
             dict(type='DefaultFormatBundle3D', class_names=class_names, with_label=False),
-            dict(type='Collect3D', keys=['img','points', 'points_raw','points_gt' ,'points_mis','global_points'], meta_keys=(
+            dict(type='Collect3D', keys=['img','points', 'points_raw','points_gt' ,'points_mis','global_points','z_points'], meta_keys=(
                 'filename', 'box_type_3d', 'ori_shape', 'img_shape', 'pad_shape',
                 'lidar2img', 'img_timestamp'))
         ])
 ]
 
 data = dict(
-    workers_per_gpu=8,
+    workers_per_gpu=4,
     train=dict(
         type=dataset_type,
         data_root=dataset_root,
@@ -228,7 +228,7 @@ lr_config = dict(
     min_lr_ratio=1e-3
 )
 total_epochs = 24
-batch_size = 3
+batch_size = 1
 
 # load pretrained weights
 load_from = 'pretrain/cascade_mask_rcnn_r50_fpn_coco-20e_20e_nuim_20201009_124951-40963960.pth'
@@ -236,6 +236,7 @@ load_from = 'pretrain/cascade_mask_rcnn_r50_fpn_coco-20e_20e_nuim_20201009_12495
 revise_keys = [('backbone', 'img_backbone')]
 
 # resume the last training
+# resume_from = 'outputs/SparseBEV/2024-08-01/10-00-26/latest.pth'
 resume_from = None
 
 # checkpointing
