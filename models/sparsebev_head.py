@@ -42,89 +42,89 @@ class TNet(nn.Module):
         x = x.view(-1, self.k, self.k) + iden
         return x
 
-class PointNet(nn.Module):
-    def __init__(self, num_queries=900 , is_contents=False):
-        super(PointNet, self).__init__()
-        self.tnet1 = TNet(k=3)
-        self.conv1 = nn.Conv1d(3, 64, 1)
-        self.conv2 = nn.Conv1d(64, 128, 1)
-        self.conv3 = nn.Conv1d(128, num_queries, 1)
-        self.tnet2 = TNet(k=64)
-        self.fc1 = nn.Linear(num_queries, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.is_contents = is_contents
-        self.num_queries = num_queries
+# class PointNet(nn.Module):
+#     def __init__(self, num_queries=900 , is_contents=False):
+#         super(PointNet, self).__init__()
+#         self.tnet1 = TNet(k=3)
+#         self.conv1 = nn.Conv1d(3, 64, 1)
+#         self.conv2 = nn.Conv1d(64, 128, 1)
+#         self.conv3 = nn.Conv1d(128, num_queries, 1)
+#         self.tnet2 = TNet(k=64)
+#         self.fc1 = nn.Linear(num_queries, 512)
+#         self.fc2 = nn.Linear(512, 256)
+#         self.is_contents = is_contents
+#         self.num_queries = num_queries
         
-        if is_contents:
-            self.fc3 = nn.Linear(256, num_queries * 256)  # numuber of query (training case : add denosing :1210) * embedded dim
-        else: 
-            # self.fc3 = nn.Linear(256, num_queries * 10)  # just classification #of class : 10
-            # self.fc3 = nn.Linear(256, num_queries)  # just classification #of class : 10
-            self.fc3 = nn.Linear(256, 11) # just classification #of class : 10
+#         if is_contents:
+#             self.fc3 = nn.Linear(256, num_queries * 256)  # numuber of query (training case : add denosing :1210) * embedded dim
+#         else: 
+#             # self.fc3 = nn.Linear(256, num_queries * 10)  # just classification #of class : 10
+#             # self.fc3 = nn.Linear(256, num_queries)  # just classification #of class : 10
+#             self.fc3 = nn.Linear(256, 11) # just classification #of class : 10
             
-        self.bn1 = nn.BatchNorm1d(64)
-        self.bn2 = nn.BatchNorm1d(128)
-        self.bn3 = nn.BatchNorm1d(num_queries)
-        self.bn4 = nn.InstanceNorm1d(512)
-        self.bn5 = nn.InstanceNorm1d(256)
+#         self.bn1 = nn.BatchNorm1d(64)
+#         self.bn2 = nn.BatchNorm1d(128)
+#         self.bn3 = nn.BatchNorm1d(num_queries)
+#         self.bn4 = nn.InstanceNorm1d(512)
+#         self.bn5 = nn.InstanceNorm1d(256)
         
-    def forward(self, x):
-        B, N, C = x.shape
-        x = x.permute(0, 2, 1)  # [B, C, N]
+#     def forward(self, x):
+#         B, N, C = x.shape
+#         x = x.permute(0, 2, 1)  # [B, C, N]
         
-        # Input transform
-        trans = self.tnet1(x)
-        x = torch.bmm(trans, x)
+#         # Input transform
+#         trans = self.tnet1(x)
+#         x = torch.bmm(trans, x)
         
-        x = F.relu(self.bn1(self.conv1(x)))
+#         x = F.relu(self.bn1(self.conv1(x)))
         
-        # Feature transform
-        trans_feat = self.tnet2(x)
-        x = torch.bmm(trans_feat, x)
+#         # Feature transform
+#         trans_feat = self.tnet2(x)
+#         x = torch.bmm(trans_feat, x)
         
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x, _ = torch.max(x, 2)
-        glob_feat = x.view(B, self.num_queries)
+#         x = F.relu(self.bn2(self.conv2(x)))
+#         x = F.relu(self.bn3(self.conv3(x)))
+#         x, _ = torch.max(x, 2)
+#         glob_feat = x.view(B, self.num_queries)
         
-        x = F.relu(self.bn4(self.fc1(glob_feat)))
-        x = F.relu(self.bn5(self.fc2(x)))
-        x = self.fc3(x)
+#         x = F.relu(self.bn4(self.fc1(glob_feat)))
+#         x = F.relu(self.bn5(self.fc2(x)))
+#         x = self.fc3(x)
 
-        # fc3의 출력 형태에 따라 reshape
-        if self.is_contents:
-            x = x.view(B, -1, 256)  # [B, num_queries, 256] 형태로 변환
-        else:
-            # x = x.view(B, -1, 10)  # [B, num_queries, 10] 형태로 변환
-            x = x
+#         # fc3의 출력 형태에 따라 reshape
+#         if self.is_contents:
+#             x = x.view(B, -1, 256)  # [B, num_queries, 256] 형태로 변환
+#         else:
+#             # x = x.view(B, -1, 10)  # [B, num_queries, 10] 형태로 변환
+#             x = x
         
-        return x ,glob_feat
+#         return x ,glob_feat
     
-    def farthest_point_sampling(self, xyz, npoints=900):
-        """
-        Input:
-            xyz: pointcloud data, [B, N, C] 형태의 텐서
-            npoints: 샘플링할 점의 개수
-        Return:
-            centroids: 샘플링된 점들의 인덱스, [B, npoints] 형태의 텐서
-        """
-        B,N,C = xyz.shape
-        xyz =xyz.view(B,N,C)
-        centroids = torch.zeros(B, npoints, dtype=torch.long).to(xyz.device)
-        distance = torch.ones(B, N).to(xyz.device) * 1e10
-        farthest = torch.randint(0, N, (B,), dtype=torch.long).to(xyz.device)
-        batch_indices = torch.arange(B, dtype=torch.long).to(xyz.device)
+    # def farthest_point_sampling(self, xyz, npoints=900):
+    #     """
+    #     Input:
+    #         xyz: pointcloud data, [B, N, C] 형태의 텐서
+    #         npoints: 샘플링할 점의 개수
+    #     Return:
+    #         centroids: 샘플링된 점들의 인덱스, [B, npoints] 형태의 텐서
+    #     """
+    #     B,N,C = xyz.shape
+    #     xyz =xyz.view(B,N,C)
+    #     centroids = torch.zeros(B, npoints, dtype=torch.long).to(xyz.device)
+    #     distance = torch.ones(B, N).to(xyz.device) * 1e10
+    #     farthest = torch.randint(0, N, (B,), dtype=torch.long).to(xyz.device)
+    #     batch_indices = torch.arange(B, dtype=torch.long).to(xyz.device)
         
-        for i in range(npoints):
-            centroids[:, i] = farthest
-            centroid = xyz[batch_indices, farthest, :].view(B, 1, C)
-            dist = torch.sum((xyz - centroid) ** 2, -1)
-            mask = dist < distance
-            distance[mask] = dist[mask]
-            farthest = torch.max(distance, -1)[1]
+    #     for i in range(npoints):
+    #         centroids[:, i] = farthest
+    #         centroid = xyz[batch_indices, farthest, :].view(B, 1, C)
+    #         dist = torch.sum((xyz - centroid) ** 2, -1)
+    #         mask = dist < distance
+    #         distance[mask] = dist[mask]
+    #         farthest = torch.max(distance, -1)[1]
         
-        sampled_points = xyz[batch_indices.unsqueeze(-1), centroids]
-        return sampled_points,centroids
+    #     sampled_points = xyz[batch_indices.unsqueeze(-1), centroids]
+    #     return sampled_points,centroids
 
 class PointNet_reduced(nn.Module):
     
@@ -218,7 +218,7 @@ class SparseBEVHead(DETRHead):
         xy = (xy + 0.5) / self.grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
         with torch.no_grad():
             self.init_query_bbox.weight[:, :2] = xy.reshape(-1, 2)  # [Q, 2]
-            self.grid = xy.reshape(-1, 2)
+            # self.grid = xy.reshape(-1, 2)
 
     def init_weights(self):
         self.transformer.init_weights()
@@ -320,19 +320,28 @@ class SparseBEVHead(DETRHead):
     #     output = F.grid_sample(pc_feature, grid, mode='bilinear', padding_mode='border') # (B,C,H,W)
     #     return output.view(B,C,-1).permute(0,2,1)
     
-    def calc_bbox_position (self,query_pc_position):
+    # def calc_bbox_position (self,query_pc_position):
         
-        normalized_query_pc_position = query_pc_position.clone()
-        # x, y 좌표에 대해 개별적으로 정규화
-        min_val = query_pc_position[:,:,0].min()
-        max_val = query_pc_position[:,:,0].max()
-        normalized_query_pc_position[:,:,0] = (query_pc_position[:,:,0] - min_val) / (max_val - min_val)
-        min_val = query_pc_position[:,:,1].min()
-        max_val = query_pc_position[:,:,1].max()
-        normalized_query_pc_position[:,:,1] = (query_pc_position[:,:,1] - min_val) / (max_val - min_val)
+    #     normalized_query_pc_position = query_pc_position.clone()
+    #     # x, y 좌표에 대해 개별적으로 정규화
+    #     min_val = query_pc_position[:,:,0].min()
+    #     max_val = query_pc_position[:,:,0].max()
+    #     normalized_query_pc_position[:,:,0] = (query_pc_position[:,:,0] - min_val) / (max_val - min_val)
+    #     min_val = query_pc_position[:,:,1].min()
+    #     max_val = query_pc_position[:,:,1].max()
+    #     normalized_query_pc_position[:,:,1] = (query_pc_position[:,:,1] - min_val) / (max_val - min_val)
         
-        return normalized_query_pc_position
+    #     return normalized_query_pc_position
+    
+    def calc_normalize (self, query_pc_contents):
+        
+        min_val = query_pc_contents.min()
+        max_val = query_pc_contents.max()
+        normalized_query_pc = ((query_pc_contents - min_val) / (max_val - min_val)) * 10
+        # 정수형으로 변환 (0~11 범위의 정수)
+        normalized_query_pc = normalized_query_pc.round().long()
 
+        return normalized_query_pc
 
     def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points,z_points):
         query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
@@ -348,19 +357,16 @@ class SparseBEVHead(DETRHead):
         # query_pc_position = self.calc_bbox_position(query_position_pc)
         glob_feat = self.pointNet_contents(points_raw)
         # grid = query_pc_position[:,:,:2]
-        query_pc_contents = self.query_sync(glob_feat,grid) # (B,N,C)
+        emb_glob_feat = self.init_query_bbox(glob_feat.squeeze(0).round().long())
+        emb_grid = emb_glob_feat[:,:2]
+        query_pc_contents = self.query_sync(glob_feat,emb_grid) # (B,N,C)
         # mid_query_pc = self.query_sync_1(pc_cls,grid)
         # mid_query_pc = self.fc(query_pc_contents)
+        normalized_query_pc = self.calc_normalize(query_pc_contents)
         
-        min_val = query_pc_contents.min()
-        max_val = query_pc_contents.max()
-        normalized_query_pc = ((query_pc_contents - min_val) / (max_val - min_val)) * 10
-        # 정수형으로 변환 (0~11 범위의 정수)
-        normalized_query_pc = normalized_query_pc.round().long()
-
         # emb_query_pc_contents = self.label_enc(query_pc_contents.squeeze(2).long())
-        emb_query_pc_contents = self.label_enc(normalized_query_pc.reshape(-1))
-        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas, emb_query_pc_contents)
+        # emb_query_pc_contents = self.label_enc(normalized_query_pc.reshape(-1))
+        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, emb_glob_feat, self.label_enc, img_metas, normalized_query_pc)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position, self.label_enc, img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw,img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas)
@@ -445,10 +451,10 @@ class SparseBEVHead(DETRHead):
         #  - https://github.com/megvii-research/PETR/blob/main/projects/mmdet3d_plugin/models/dense_heads/petrv2_dnhead.py
 
         device = init_query_bbox.device
-        indicator0 = torch.zeros([1, self.num_query, 1], device=device)
+        # indicator0 = torch.zeros([1, self.num_query, 1], device=device)
         # init_query_feat_raw = label_enc.weight[self.num_classes].repeat(self.num_query, 1)
         # init_query_feat_raw = torch.cat([init_query_feat_raw, indicator0], dim=1)
-        query_feat_pc = torch.cat([query_feat_pc.unsqueeze(0), indicator0], dim=2)
+        # query_feat_pc = torch.cat([query_feat_pc.unsqueeze(0), indicator0], dim=2)
         
         # init_query_feat = init_query_feat_raw
         query_bbox      = init_query_bbox.clone()
@@ -506,7 +512,16 @@ class SparseBEVHead(DETRHead):
                 known_labels_expand.scatter_(0, chosen_indice, new_label)
 
             known_feat_expand = label_enc(known_labels_expand)
+            combined_input = torch.cat([query_feat_pc.reshape(-1), known_labels_expand], dim=0)
+            combined_emb = label_enc(combined_input)
+            emb_query_pc_contents, known_feat_expand = torch.split(combined_emb, 
+                                                        [query_feat_pc.numel(), 
+                                                        known_labels_expand.numel()],
+                                                        dim=0)
             indicator1 = torch.ones([known_feat_expand.shape[0], 1], device=device)  # add dn part indicator
+            indicator2 = torch.ones([emb_query_pc_contents.shape[0], 1], device=device)  # add dn part indicator
+            
+            query_feat_pc_expand = torch.cat([emb_query_pc_contents, indicator2], dim=1)
             known_feat_expand = torch.cat([known_feat_expand, indicator1], dim=1)
 
             # construct final query
@@ -519,9 +534,10 @@ class SparseBEVHead(DETRHead):
             # input_query_feat_raw = torch.cat([dn_query_feat, init_query_feat], dim=0).repeat(batch_size, 1, 1)
             batch_dn_query_feat =dn_query_feat.repeat(batch_size, 1, 1)
             batch_dn_query_bbox =dn_query_bbox.repeat(batch_size, 1, 1)
-            batch_query_bbox =query_bbox.repeat(batch_size, 1, 1)
+            batch_query_bbox = query_bbox.repeat(batch_size, 1, 1)
+            batch_query_feat_pc_expand = query_feat_pc_expand.repeat(batch_size, 1, 1)
 
-            input_query_pc = torch.cat([batch_dn_query_feat,query_feat_pc],dim=1)
+            input_query_pc = torch.cat([batch_dn_query_feat,batch_query_feat_pc_expand],dim=1)
             input_query_pc_bbox = torch.cat([batch_dn_query_bbox, batch_query_bbox],dim=1)
             # input_query_combined = torch.cat([input_query_feat_raw,input_query_pc],dim=2)
 
@@ -562,7 +578,7 @@ class SparseBEVHead(DETRHead):
             # input_query_bbox = init_query_bbox.repeat(batch_size, 1, 1)
             input_query_bbox = query_bbox.repeat(batch_size, 1, 1)
             # input_query_feat = init_query_feat.repeat(batch_size, 1, 1)
-            input_query_feat = query_feat_pc
+            input_query_feat = query_feat_pc_expand.repeat(batch_size, 1, 1)
             attn_mask = None
             mask_dict = None
 
