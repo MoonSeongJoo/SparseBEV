@@ -30,7 +30,9 @@ class SparseBEVTransformer(BaseModule):
         self.decoder.init_weights()
 
     def forward(self, query_bbox, query_feat, mlvl_feats, attn_mask, img_metas):
+    # def forward(self, query_bbox, query_feat, mlvl_feats, img_metas):
         cls_scores, bbox_preds = self.decoder(query_bbox, query_feat, mlvl_feats, attn_mask, img_metas)
+        # cls_scores, bbox_preds = self.decoder(query_bbox, query_feat, mlvl_feats,img_metas)
 
         cls_scores = torch.nan_to_num(cls_scores)
         bbox_preds = torch.nan_to_num(bbox_preds)
@@ -54,6 +56,7 @@ class SparseBEVTransformerDecoder(BaseModule):
         self.decoder_layer.init_weights()
 
     def forward(self, query_bbox, query_feat, mlvl_feats, attn_mask, img_metas):
+    # def forward(self, query_bbox, query_feat, mlvl_feats, img_metas):
         cls_scores, bbox_preds = [], []
 
         # calculate time difference according to timestamps
@@ -90,6 +93,9 @@ class SparseBEVTransformerDecoder(BaseModule):
             query_feat, cls_score, bbox_pred = self.decoder_layer(
                 query_bbox, query_feat, mlvl_feats, attn_mask, img_metas
             )
+            # query_feat, cls_score, bbox_pred = self.decoder_layer(
+            #     query_bbox, query_feat, mlvl_feats, img_metas
+            # )
             query_bbox = bbox_pred.clone().detach()
 
             cls_scores.append(cls_score)
@@ -100,6 +106,21 @@ class SparseBEVTransformerDecoder(BaseModule):
 
         return cls_scores, bbox_preds
 
+class ConvFuser(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, inputs):
+        # 입력 텐서를 채널 차원에서 연결
+        x = self.conv(inputs)
+        x = self.bn(x)
+        x = self.relu(x)
+        return x
 
 class SparseBEVTransformerDecoderLayer(BaseModule):
     def __init__(self, embed_dims, num_frames=8, num_points=4, num_levels=4, num_classes=10, code_size=10, num_cls_fcs=2, num_reg_fcs=2, pc_range=[], init_cfg=None):
@@ -127,6 +148,8 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         self.norm1 = nn.LayerNorm(embed_dims)
         self.norm2 = nn.LayerNorm(embed_dims)
         self.norm3 = nn.LayerNorm(embed_dims)
+        
+        self.conv_fuser = ConvFuser(embed_dims*2,embed_dims)
 
         cls_branch = []
         for _ in range(num_cls_fcs):
@@ -160,20 +183,48 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         return torch.cat([xyz_new, bbox_delta[..., 3:]], dim=-1)
 
     def forward(self, query_bbox, query_feat, mlvl_feats, attn_mask, img_metas):
+    # def forward(self, query_bbox, query_feat, mlvl_feats, img_metas):
         """
         query_bbox: [B, Q, 10] [cx, cy, cz, w, h, d, rot.sin, rot.cos, vx, vy]
         """
-        query_pos = self.position_encoder(query_bbox[..., :3])
-        query_feat = query_feat + query_pos
+        B,N,C= query_feat.shape
+        
+        # 패딩 크기 계산
+        if attn_mask == None :
+            query_bbox_padded = query_bbox
+            query_feat_padded = query_feat
+            attn_mask_padded  = attn_mask
+        else :            
+            desired_length = 1600
+            current_length = query_feat.size(1)
+            current_length_mask = attn_mask.size(1)
+            padding_needed = desired_length - current_length
+            padding_needed_mask = desired_length - current_length_mask
+        
+            query_bbox_padded = F.pad(query_bbox, (0, 0, 0, padding_needed)) # (1, 1210 + padding_needed, 10) 
+            query_feat_padded  = F.pad(query_feat, (0, 0, 0, padding_needed)) # (1, 1210 + padding_needed, 256) 
+            attn_mask_padded = F.pad(attn_mask, (0, padding_needed_mask, 0, padding_needed_mask))  # (1600, 1600)
 
-        query_feat = self.norm1(self.self_attn(query_bbox, query_feat, attn_mask))
-        sampled_feat = self.sampling(query_bbox, query_feat, mlvl_feats, img_metas)
+        query_pos = self.position_encoder(query_bbox_padded[..., :3])
+        query_feat_padded = query_feat_padded + query_pos
+        
+        query_feat = self.norm1(self.self_attn(query_bbox_padded, query_feat_padded, attn_mask_padded))
+        # query_feat = self.norm1(self.self_attn(query_bbox, query_feat))
+        query_feat_inter = query_feat.clone()
+        sampled_feat = self.sampling(query_bbox_padded, query_feat, mlvl_feats, img_metas)
         query_feat = self.norm2(self.mixing(sampled_feat, query_feat))
         query_feat = self.norm3(self.ffn(query_feat))
+ 
+        if attn_mask == None :
+            query_feat_concat = torch.cat([query_feat_inter,query_feat],dim=2).permute(0,2,1).view(B,C*2,30,30)
+        else :
+            query_feat_concat = torch.cat([query_feat_inter,query_feat],dim=2).permute(0,2,1).view(B,C*2,40,40)
+        
+        bev_fusion = self.conv_fuser(query_feat_concat).view(B,C,-1).permute(0,2,1)
 
-        cls_score = self.cls_branch(query_feat)  # [B, Q, num_classes]
-        bbox_pred = self.reg_branch(query_feat)  # [B, Q, code_size]
-        bbox_pred = self.refine_bbox(query_bbox, bbox_pred)
+        cls_score = self.cls_branch(bev_fusion)  # [B, Q, num_classes]
+        bbox_pred = self.reg_branch(bev_fusion)  # [B, Q, code_size]
+        bbox_pred = self.refine_bbox(query_bbox_padded, bbox_pred)
 
         # calculate absolute velocity according to time difference
         time_diff = img_metas[0]['time_diff']  # [B, F]
@@ -208,6 +259,7 @@ class SparseBEVSelfAttention(BaseModule):
         nn.init.uniform_(self.gen_tau.bias, 0.0, 2.0)
 
     def inner_forward(self, query_bbox, query_feat, pre_attn_mask):
+    # def inner_forward(self, query_bbox, query_feat):
         """
         query_bbox: [B, Q, 10]
         query_feat: [B, Q, C]
@@ -228,10 +280,13 @@ class SparseBEVSelfAttention(BaseModule):
         return self.attention(query_feat, attn_mask=attn_mask)
 
     def forward(self, query_bbox, query_feat, pre_attn_mask):
+    # def forward(self, query_bbox, query_feat):
         if self.training and query_feat.requires_grad:
             return cp(self.inner_forward, query_bbox, query_feat, pre_attn_mask, use_reentrant=False)
+            # return cp(self.inner_forward, query_bbox, query_feat, use_reentrant=False)
         else:
             return self.inner_forward(query_bbox, query_feat, pre_attn_mask)
+            # return self.inner_forward(query_bbox, query_feat)
 
     @torch.no_grad()
     def calc_bbox_dists(self, bboxes):

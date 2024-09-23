@@ -10,6 +10,10 @@ from mmdet3d.core.bbox.structures.lidar_box3d import LiDARInstance3DBoxes
 from .bbox.utils import normalize_bbox, encode_bbox
 from .utils import VERSION
 import torch.nn.functional as F
+import open3d as o3d
+import numpy as np
+import spconv.pytorch as spconv
+
 
 class TNet(nn.Module):
     def __init__(self, k):
@@ -41,90 +45,6 @@ class TNet(nn.Module):
         iden = torch.eye(self.k, requires_grad=True).repeat(B, 1, 1).to(x.device)
         x = x.view(-1, self.k, self.k) + iden
         return x
-
-# class PointNet(nn.Module):
-#     def __init__(self, num_queries=900 , is_contents=False):
-#         super(PointNet, self).__init__()
-#         self.tnet1 = TNet(k=3)
-#         self.conv1 = nn.Conv1d(3, 64, 1)
-#         self.conv2 = nn.Conv1d(64, 128, 1)
-#         self.conv3 = nn.Conv1d(128, num_queries, 1)
-#         self.tnet2 = TNet(k=64)
-#         self.fc1 = nn.Linear(num_queries, 512)
-#         self.fc2 = nn.Linear(512, 256)
-#         self.is_contents = is_contents
-#         self.num_queries = num_queries
-        
-#         if is_contents:
-#             self.fc3 = nn.Linear(256, num_queries * 256)  # numuber of query (training case : add denosing :1210) * embedded dim
-#         else: 
-#             # self.fc3 = nn.Linear(256, num_queries * 10)  # just classification #of class : 10
-#             # self.fc3 = nn.Linear(256, num_queries)  # just classification #of class : 10
-#             self.fc3 = nn.Linear(256, 11) # just classification #of class : 10
-            
-#         self.bn1 = nn.BatchNorm1d(64)
-#         self.bn2 = nn.BatchNorm1d(128)
-#         self.bn3 = nn.BatchNorm1d(num_queries)
-#         self.bn4 = nn.InstanceNorm1d(512)
-#         self.bn5 = nn.InstanceNorm1d(256)
-        
-#     def forward(self, x):
-#         B, N, C = x.shape
-#         x = x.permute(0, 2, 1)  # [B, C, N]
-        
-#         # Input transform
-#         trans = self.tnet1(x)
-#         x = torch.bmm(trans, x)
-        
-#         x = F.relu(self.bn1(self.conv1(x)))
-        
-#         # Feature transform
-#         trans_feat = self.tnet2(x)
-#         x = torch.bmm(trans_feat, x)
-        
-#         x = F.relu(self.bn2(self.conv2(x)))
-#         x = F.relu(self.bn3(self.conv3(x)))
-#         x, _ = torch.max(x, 2)
-#         glob_feat = x.view(B, self.num_queries)
-        
-#         x = F.relu(self.bn4(self.fc1(glob_feat)))
-#         x = F.relu(self.bn5(self.fc2(x)))
-#         x = self.fc3(x)
-
-#         # fc3의 출력 형태에 따라 reshape
-#         if self.is_contents:
-#             x = x.view(B, -1, 256)  # [B, num_queries, 256] 형태로 변환
-#         else:
-#             # x = x.view(B, -1, 10)  # [B, num_queries, 10] 형태로 변환
-#             x = x
-        
-#         return x ,glob_feat
-    
-    # def farthest_point_sampling(self, xyz, npoints=900):
-    #     """
-    #     Input:
-    #         xyz: pointcloud data, [B, N, C] 형태의 텐서
-    #         npoints: 샘플링할 점의 개수
-    #     Return:
-    #         centroids: 샘플링된 점들의 인덱스, [B, npoints] 형태의 텐서
-    #     """
-    #     B,N,C = xyz.shape
-    #     xyz =xyz.view(B,N,C)
-    #     centroids = torch.zeros(B, npoints, dtype=torch.long).to(xyz.device)
-    #     distance = torch.ones(B, N).to(xyz.device) * 1e10
-    #     farthest = torch.randint(0, N, (B,), dtype=torch.long).to(xyz.device)
-    #     batch_indices = torch.arange(B, dtype=torch.long).to(xyz.device)
-        
-    #     for i in range(npoints):
-    #         centroids[:, i] = farthest
-    #         centroid = xyz[batch_indices, farthest, :].view(B, 1, C)
-    #         dist = torch.sum((xyz - centroid) ** 2, -1)
-    #         mask = dist < distance
-    #         distance[mask] = dist[mask]
-    #         farthest = torch.max(distance, -1)[1]
-        
-    #     sampled_points = xyz[batch_indices.unsqueeze(-1), centroids]
-    #     return sampled_points,centroids
 
 class PointNet_reduced(nn.Module):
     
@@ -162,6 +82,219 @@ class PointNet_reduced(nn.Module):
         
         return x
 
+# Voxelization layer - Point cloud to Voxel
+class VoxelizationLayer:
+    def __init__(self, voxel_size, grid_size, max_num_points_per_voxel):
+        self.voxel_size = voxel_size
+        self.grid_size = grid_size
+        self.max_num_points_per_voxel = max_num_points_per_voxel
+
+    def forward(self, point_cloud):
+        # point_cloud: (batch, num_points, 3), torch.tensor type
+        batch_size = point_cloud.size(0)
+        
+        voxel_coords_list = []
+        voxel_points_list = []
+
+        for b in range(batch_size):
+            # Convert point cloud to numpy for Open3D compatibility
+            points = point_cloud[b].cpu().numpy()
+
+            # Create an Open3D point cloud object
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points)
+
+            # Apply voxelization using Open3D
+            voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=self.voxel_size)
+
+            # Store voxel information: coordinates and voxelized points
+            voxels = voxel_grid.get_voxels()
+
+            voxel_coords = []
+            voxel_points = []
+
+            for voxel in voxels:
+                voxel_coords.append(voxel.grid_index)
+                voxel_points.append(voxel_grid.get_voxel_center_coordinate(voxel.grid_index))
+
+            # Convert to numpy arrays
+            voxel_coords = np.array(voxel_coords)
+            voxel_points = np.array(voxel_points)
+
+            # Convert back to tensor and send to appropriate device
+            voxel_coords = torch.tensor(voxel_coords, dtype=torch.long).to(point_cloud.device)
+            voxel_points = torch.tensor(voxel_points, dtype=torch.float32).to(point_cloud.device)
+
+            # Save per-batch voxelized data
+            voxel_coords_list.append(voxel_coords)
+            voxel_points_list.append(voxel_points)
+
+        # Stack the list of tensors along the batch dimension
+        voxel_coords_stack = torch.stack(voxel_coords_list, dim=0)
+        voxel_points_stack = torch.stack(voxel_points_list, dim=0)
+
+        return voxel_coords_stack, voxel_points_stack
+
+
+# Voxel Feature Encoding (VFE) layer
+class VFE(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(VFE, self).__init__()
+        self.fc = nn.Linear(input_dim, output_dim)
+        self.bn = nn.BatchNorm1d(output_dim)
+        self.relu = nn.ReLU()
+
+    def forward(self, voxel_points):
+        """
+        voxel_coords: (B, num_voxels, 3), each voxel's grid index (x, y, z)
+        voxel_points: (B, num_voxels, C), each voxel's center coordinate features
+        """
+        B, num_voxels, C = voxel_points.size()
+
+        # Apply fully connected layer to the voxel features (voxel_points)
+        x = voxel_points.view(-1, C)  # Flatten the voxels to apply the FC layer
+        x = self.fc(x)
+        x = self.bn(x)
+        x = self.relu(x)
+
+        # Reshape back to (B, num_voxels, output_dim)
+        x = x.view(B, num_voxels, -1)
+
+        # Here you might want to aggregate the features within each voxel grid cell
+        # since the original version does max-pooling along the P dimension.
+        # If `voxel_coords` is needed for pooling or further processing, 
+        # that step would be added here.
+
+        return x  # Output is (B, num_voxels, output_dim)
+
+
+# 3D Convolutional Middle Layers
+class MiddleLayers3D(nn.Module):
+    def __init__(self):
+        super(MiddleLayers3D, self).__init__()
+        self.conv1 = nn.Conv3d(64, 64, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm3d(64)
+        self.conv2 = nn.Conv3d(64, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm3d(64)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.bn2(self.conv2(x)))
+        return x
+    
+class SparseConvNet(nn.Module):
+    def __init__(self):
+        super(SparseConvNet, self).__init__()
+        self.sparse_conv1 = spconv.SparseConv3d(128, 64, kernel_size=3, padding=1)
+        # self.sparse_bn1 = spconv.SparseBatchNorm3d(64)
+        # self.sparse_bn1 = spconv.SparseBatchNorm(64)
+        self.sparse_bn1 = nn.BatchNorm3d(64)
+        self.sparse_conv2 = spconv.SparseConv3d(64, 64, kernel_size=3, padding=1)
+        # self.sparse_bn2 = spconv.SparseBatchNorm3d(64)
+        # self.sparse_bn2 = spconv.SparseBatchNorm(64)
+        self.sparse_bn2 = nn.BatchNorm3d(64)
+        self.relu = nn.ReLU()
+        self.final_conv = nn.Conv3d(64, 64, kernel_size=3, padding=1)  # depth, height, width 조정을 위한 추가 layer
+
+    def forward(self, voxel_features, voxel_coords, spatial_shape, batch_size):
+        # voxel_features: (N, C) tensor
+        # voxel_coords: (N, 3) tensor
+        
+        # Convert voxel features and coordinates to sparse tensor
+        voxel_tensor = spconv.SparseConvTensor(features=voxel_features, indices=voxel_coords , spatial_shape=spatial_shape, batch_size=batch_size)
+        # x = self.relu(self.sparse_bn1(self.sparse_conv1(voxel_tensor)))
+        # x = self.relu(self.sparse_bn2(self.sparse_conv2(voxel_tensor_out)))
+        
+        sparse_out = self.sparse_conv1(voxel_tensor)
+        batch_size = voxel_tensor.batch_size
+        num_voxels = sparse_out.features.size(0)
+        dense_features = sparse_out.features.view(batch_size, 64, 1, 1, num_voxels)  # 4D 텐서로 변환
+        # dense_features = sparse_out.features.view(-1,64) # (N, C) 형태로 변환
+        x = self.relu(self.sparse_bn1(dense_features))
+        
+        voxel_tensor_out = spconv.SparseConvTensor(features=x.view(-1, 64), indices=sparse_out.indices , spatial_shape=voxel_tensor.spatial_shape, batch_size=batch_size)
+        assert not torch.isnan(voxel_features).any(), "voxel_features contains nan"
+        sparse_out2 = self.sparse_conv2(voxel_tensor_out)
+        num_voxels2 = sparse_out2.features.size(0)
+        dense_features2 = sparse_out2.features.view(batch_size, 64, 1, 1, num_voxels2) # 4D 텐서로 변환
+        # dense_features2 = sparse_out2.features.view(-1,64) # (N, C) 형태로 변환
+        x = self.relu(self.sparse_bn2(dense_features2))
+        
+        # 추가 Conv를 통해 원하는 크기로 조정
+        x = x.view(batch_size, 64, 1, 1, num_voxels2)  # 임시로 5D 텐서로 변환
+        x = self.final_conv(x)  # (batch_size, 64, depth, height, width)
+
+        # 최종적으로 depth=30, height=30, width=30로 조정
+        x = F.interpolate(x, size=(30, 30, 30), mode='trilinear', align_corners=False)
+        
+        return x
+
+# Region Proposal Network (RPN)
+class RPN(nn.Module):
+    def __init__(self, input_dim, num_anchors):
+        super(RPN, self).__init__()
+        self.conv1 = nn.Conv2d(input_dim, 128, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(128)
+        self.relu = nn.ReLU()
+
+        self.conv_cls = nn.Conv2d(128, 256, kernel_size=1)
+        # self.conv_reg = nn.Conv2d(128, 10, kernel_size=1)
+
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        cls_logits = self.conv_cls(x)  # Classification output
+        # reg_output = self.conv_reg(x)  # Regression output (bounding boxes)
+        # return cls_logits , reg_output
+        return cls_logits
+
+
+# VoxelNet model
+class VoxelNet(nn.Module):
+    def __init__(self, voxel_size, grid_size, max_num_points_per_voxel, num_anchors):
+        super(VoxelNet, self).__init__()
+        self.voxelization = VoxelizationLayer(voxel_size, grid_size, max_num_points_per_voxel)
+        self.vfe = VFE(input_dim=3, output_dim=128)
+        self.sparseconv = SparseConvNet()
+        self.middle_layers = MiddleLayers3D()
+        self.rpn = RPN(input_dim=1920, num_anchors=num_anchors)
+
+    def forward(self, point_cloud):
+        voxel_coords,voxel_points = self.voxelization.forward(point_cloud)
+        voxel_features = self.vfe(voxel_points)
+        
+        # Change voxel_features shape to (N, C) for spconv
+        B, num_voxels, C = voxel_features.size()
+        voxel_features = voxel_features.view(B * num_voxels, C)
+        
+        # Change voxel_coords shape to (N, 3) for spconv
+        voxel_coords = voxel_coords.view(B* num_voxels, 3)
+
+        # 배치 인덱스 추가
+        batch_indices = torch.arange(B).repeat_interleave(num_voxels).view(-1, 1).cuda()
+        voxel_coords = torch.cat((batch_indices, voxel_coords), dim=1)
+        # voxel_coords를 torch.int32로 캐스팅
+        voxel_coords = voxel_coords.to(torch.int32)
+        
+        # Apply SparseConvNet
+        sparse_features = self.sparseconv(voxel_features, voxel_coords , tuple(self.voxelization.grid_size) ,B)
+        
+        # Reshape sparse_features back to the format for MiddleLayers3D
+        # Assuming the output of spconv is in (B, C, D, H, W)
+        # sparse_features = sparse_features.dense()  # Convert back to dense tensor
+        # sparse_features = sparse_features.permute(0, 4, 1, 2, 3)  # (B, C, D, H, W)
+        
+        # Process with middle layers and RPN
+        middle_features = self.middle_layers(sparse_features)
+        middle_features = middle_features.view(B , -1, 30, 30)
+        # middle_features = torch.squeeze(middle_features, dim=2)  # Squeeze depth dimension to use 2D conv in RPN
+        # cls_logits , reg_logits = self.rpn(middle_features)
+        cls_logits = self.rpn(middle_features)
+        
+        # return cls_logits , reg_logits
+        return cls_logits 
+
+
 @HEADS.register_module()
 class SparseBEVHead(DETRHead):
     def __init__(self,
@@ -191,9 +324,12 @@ class SparseBEVHead(DETRHead):
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.pc_range = self.bbox_coder.pc_range
         # self.pointNet_contents = PointNet(num_queries=900 , is_contents=True)
-        self.pointNet_contents = PointNet_reduced(num_queries=900)
+        # self.pointNet_contents = PointNet_reduced(num_queries=900)
         # self.pointNet_position = PointNet(num_queries=900 , is_contents=False)
-
+        self.voxelnet = VoxelNet(voxel_size = 0.2 , grid_size = [1440, 1440, 41], max_num_points_per_voxel = 35, num_anchors = 5)
+        # self.fc = nn.Linear(900,self.num_query*self.embed_dims)
+        # self.fc1 = nn.Linear(900,self.num_query*self.embed_dims)
+        
         self.dn_enabled = query_denoising
         self.dn_group_num = query_denoising_groups
         self.dn_weight = 1.0
@@ -204,8 +340,7 @@ class SparseBEVHead(DETRHead):
         self.init_query_bbox = nn.Embedding(self.num_query, 10)  # (x, y, z, w, l, h, sin, cos, vx, vy)
         self.label_enc = nn.Embedding(self.num_classes + 1, self.embed_dims - 1)  # DAB-DETR
         # self.fc = nn.Linear(self.embed_dims*2,self.embed_dims) # DDP error : 안쓰여지는 network
-        # self.fc = nn.Linear(900,self.num_classes + 1)
-
+        
         nn.init.zeros_(self.init_query_bbox.weight[:, 2:3])
         nn.init.zeros_(self.init_query_bbox.weight[:, 8:10])
         nn.init.constant_(self.init_query_bbox.weight[:, 5:6], 1.5)
@@ -296,11 +431,17 @@ class SparseBEVHead(DETRHead):
         # grid를 (B, N, 1, 2) 형태로 변환
         grid = grid.view(B, 30, 30, 2)  # (B, N, 2) -> (B, N, 1, 2)
 
-        # grid의 값을 [-1, 1] 범위로 정규화
-        grid = grid * 2 - 1  # [0, 1] -> [-1, 1]
+        # # grid의 값을 [-1, 1] 범위로 정규화
+        # grid = grid * 2 - 1  # [0, 1] -> [-1, 1]
+        # 정규화 과정
+        min_val = torch.min(grid)
+        max_val = torch.max(grid)
+
+        # [-1, 1] 사이로 정규화
+        grid_normalized = 2 * ((grid - min_val) / (max_val - min_val)) - 1
 
         # grid_sample을 사용하여 pc_feature 맵핑
-        output = F.grid_sample(pc_feature, grid, mode='bilinear', padding_mode='border', align_corners=True)
+        output = F.grid_sample(pc_feature, grid_normalized, mode='bilinear', padding_mode='border', align_corners=True)
 
         return output.view(B,-1)
     
@@ -344,8 +485,8 @@ class SparseBEVHead(DETRHead):
         return normalized_query_pc
 
     def forward(self, mlvl_feats, img_metas, points_raw, points_gt, points_mis,global_points,z_points):
-        query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
-        grid = query_bbox_raw[:,:2]
+        query_bbox_clone = self.init_query_bbox.weight.clone()  # [Q, 10]
+        # grid = query_bbox_raw[:,:2]
         # query_bbox_raw[:,:2] = global_points.squeeze(0)
         # query_bbox_raw[:,2] = z_points.squeeze(0)
         #query_bbox[..., :3] = query_bbox[..., :3].sigmoid()
@@ -355,51 +496,30 @@ class SparseBEVHead(DETRHead):
         # reduce_point_raw , _ = self.pointNet.farthest_point_sampling(points_raw,30000)
         # query_position_pc = self.pointNet_position(points_raw)
         # query_pc_position = self.calc_bbox_position(query_position_pc)
-        glob_feat = self.pointNet_contents(points_raw)
+        # glob_feat = self.pointNet_contents(points_raw)
+        voxel_cls_feat = self.voxelnet(points_raw)
+        voxel_cls_feat = voxel_cls_feat.view(B,256,-1).permute(0,2,1)  # query feature
+        # voxel_reg_feat = voxel_reg_feat.view(B,10,-1).permute(0,2,1)   # query position embedding
         # grid = query_pc_position[:,:,:2]
-        emb_glob_feat = self.init_query_bbox(glob_feat.squeeze(0).round().long())
-        emb_grid = emb_glob_feat[:,:2]
-        query_pc_contents = self.query_sync(glob_feat,emb_grid) # (B,N,C)
+        # emb_glob_feat = self.init_query_bbox(glob_feat.squeeze(0).round().long())
+        # emb_grid = emb_glob_feat[:,:2]
+        # query_pc_contents = self.query_sync(glob_feat,emb_grid) # (B,N,C)
         # mid_query_pc = self.query_sync_1(pc_cls,grid)
         # mid_query_pc = self.fc(query_pc_contents)
-        normalized_query_pc = self.calc_normalize(query_pc_contents)
+        # normalized_query_pc = self.calc_normalize(query_pc_contents)
         
         # emb_query_pc_contents = self.label_enc(query_pc_contents.squeeze(2).long())
         # emb_query_pc_contents = self.label_enc(normalized_query_pc.reshape(-1))
-        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, emb_glob_feat, self.label_enc, img_metas, normalized_query_pc)
+        # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, voxel_reg_feat , img_metas, voxel_cls_feat)
+        query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_clone , self.label_enc, img_metas, voxel_cls_feat)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position, self.label_enc, img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw,img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas)
         
         query_feat = query_feat_raw 
-        
-        ####  to-do : 필요 없는 코드 ##########
-        # reduce_point_raw = points_gt
-        # query_grid = query_bbox_raw[:,:,:2].unsqueeze(1)
-        # # norm_points = (reduce_point_raw[:,:,:,:2]-0.5)*2 # -1~1 정규화 : 정규화 안됨
-
-        # # reduce_point_raw의 각 차원에 대해 최소값과 최대값을 계산
-        # min_vals = reduce_point_raw[:,:,:,:2].min(dim=0, keepdim=True)[0]
-        # min_vals = min_vals.min(dim=1, keepdim=True)[0]
-        # min_vals = min_vals.min(dim=2, keepdim=True)[0]
-
-        # max_vals = reduce_point_raw[:,:,:,:2].max(dim=0, keepdim=True)[0]
-        # max_vals = max_vals.max(dim=1, keepdim=True)[0]
-        # max_vals = max_vals.max(dim=2, keepdim=True)[0]
-
-        # # 최소값과 최대값을 이용해 -1과 1 사이로 정규화
-        # norm_points = 2 * (reduce_point_raw[:,:,:,:2] - min_vals) / (max_vals - min_vals) - 1
-  
-        # norm_points_expanded = norm_points.permute(0,3,1,2)
-        # sampled_points = F.grid_sample(norm_points_expanded, query_grid ,mode='bilinear', align_corners=True)
-        # sampled_points = sampled_points.permute(0, 2, 3, 1).squeeze(1)
-        
-        # reduce_point_mis,_ = self.pointNet.farthest_point_sampling(points_gt)
-        # mis_point_query= self.pointNet(reduce_point_mis)
-        # query_bbox = torch.cat((query_bbox_raw , mis_point_query),dim=1)
-        # query_bbox_new[:, :, :2] = sampled_points
-        
         query_bbox = query_bbox_raw 
+        # attn_mask = None
+        # mask_dict = None
         
         cls_scores, bbox_preds = self.transformer(
             query_bbox,
@@ -408,6 +528,12 @@ class SparseBEVHead(DETRHead):
             attn_mask=attn_mask,
             img_metas=img_metas,
         )
+        # cls_scores, bbox_preds = self.transformer(
+        #     query_bbox,
+        #     query_feat,
+        #     mlvl_feats,
+        #     img_metas=img_metas,
+        # )
 
         bbox_preds[..., 0] = bbox_preds[..., 0] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0]
         bbox_preds[..., 1] = bbox_preds[..., 1] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1]
@@ -440,10 +566,19 @@ class SparseBEVHead(DETRHead):
                 'enc_cls_scores': None,
                 'enc_bbox_preds': None, 
             }
+            
+        # outs = {
+        #         'all_cls_scores': cls_scores,
+        #         'all_bbox_preds': bbox_preds,
+        #         'enc_cls_scores': None,
+        #         'enc_bbox_preds': None, 
+        #     }
 
         return outs
+    
 
-    def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas, query_feat_pc):
+    def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas, voxel_cls_feat):
+    # def prepare_for_dn_input(self, batch_size, init_query_bbox,img_metas, voxel_cls_feat):
     # def prepare_for_dn_input(self, batch_size, init_query_bbox, img_metas, query_feat_pc):
     # def prepare_for_dn_input(self, batch_size, init_query_bbox, label_enc, img_metas):
         # mostly borrowed from:
@@ -451,13 +586,13 @@ class SparseBEVHead(DETRHead):
         #  - https://github.com/megvii-research/PETR/blob/main/projects/mmdet3d_plugin/models/dense_heads/petrv2_dnhead.py
 
         device = init_query_bbox.device
-        # indicator0 = torch.zeros([1, self.num_query, 1], device=device)
+        # indicator0 = torch.zeros([self.num_query, 1], device=device)
         # init_query_feat_raw = label_enc.weight[self.num_classes].repeat(self.num_query, 1)
         # init_query_feat_raw = torch.cat([init_query_feat_raw, indicator0], dim=1)
         # query_feat_pc = torch.cat([query_feat_pc.unsqueeze(0), indicator0], dim=2)
         
         # init_query_feat = init_query_feat_raw
-        query_bbox      = init_query_bbox.clone()
+        query_bbox      = init_query_bbox
         
         if self.training and self.dn_enabled:
             targets = [{
@@ -512,16 +647,18 @@ class SparseBEVHead(DETRHead):
                 known_labels_expand.scatter_(0, chosen_indice, new_label)
 
             known_feat_expand = label_enc(known_labels_expand)
-            combined_input = torch.cat([query_feat_pc.reshape(-1), known_labels_expand], dim=0)
-            combined_emb = label_enc(combined_input)
-            emb_query_pc_contents, known_feat_expand = torch.split(combined_emb, 
-                                                        [query_feat_pc.numel(), 
-                                                        known_labels_expand.numel()],
-                                                        dim=0)
+            # combined_input = torch.cat([query_feat_pc.reshape(-1), known_labels_expand], dim=0)
+            # emb_query_pc_contents = self.fc(query_feat_pc).view(self.num_query,-1)
+            # global_pc_contents = self.fc1(glob_feat).view(self.num_query,-1)
+            # combined_emb = label_enc(combined_input)
+            # emb_query_pc_contents, known_feat_expand = torch.split(combined_emb, 
+            #                                             [query_feat_pc.numel(), 
+            #                                             known_labels_expand.numel()],
+            #                                             dim=0)
             indicator1 = torch.ones([known_feat_expand.shape[0], 1], device=device)  # add dn part indicator
-            indicator2 = torch.ones([emb_query_pc_contents.shape[0], 1], device=device)  # add dn part indicator
+            # indicator2 = torch.ones([emb_query_pc_contents.shape[0], 1], device=device)  # add dn part indicator
             
-            query_feat_pc_expand = torch.cat([emb_query_pc_contents, indicator2], dim=1)
+            # query_feat_pc_expand = torch.cat([emb_query_pc_contents, indicator2], dim=1)
             known_feat_expand = torch.cat([known_feat_expand, indicator1], dim=1)
 
             # construct final query
@@ -535,14 +672,18 @@ class SparseBEVHead(DETRHead):
             batch_dn_query_feat =dn_query_feat.repeat(batch_size, 1, 1)
             batch_dn_query_bbox =dn_query_bbox.repeat(batch_size, 1, 1)
             batch_query_bbox = query_bbox.repeat(batch_size, 1, 1)
-            batch_query_feat_pc_expand = query_feat_pc_expand.repeat(batch_size, 1, 1)
+            # batch_query_bbox = query_bbox
+            # batch_query_feat_pc_expand = emb_query_pc_contents.repeat(batch_size, 1, 1)
+            # batch_global_pc_contents = global_pc_contents.repeat(batch_size, 1, 1)
 
-            input_query_pc = torch.cat([batch_dn_query_feat,batch_query_feat_pc_expand],dim=1)
+            input_query_pc = torch.cat([batch_dn_query_feat,voxel_cls_feat],dim=1)
             input_query_pc_bbox = torch.cat([batch_dn_query_bbox, batch_query_bbox],dim=1)
+            # input_global_pc = torch.cat([batch_dn_query_feat, voxel_cls_feat],dim=1)
             # input_query_combined = torch.cat([input_query_feat_raw,input_query_pc],dim=2)
 
             # aggrated_query_feat = self.fc(input_query_combined)
             input_query_feat = input_query_pc
+            # input_query_feat = input_query_feat_raw
             input_query_bbox = input_query_pc_bbox
 
             if len(known_num):
@@ -577,8 +718,11 @@ class SparseBEVHead(DETRHead):
         else:
             # input_query_bbox = init_query_bbox.repeat(batch_size, 1, 1)
             input_query_bbox = query_bbox.repeat(batch_size, 1, 1)
-            # input_query_feat = init_query_feat.repeat(batch_size, 1, 1)
-            input_query_feat = query_feat_pc_expand.repeat(batch_size, 1, 1)
+            input_query_feat = voxel_cls_feat
+            # emb_query_pc_contents = self.fc(query_feat_pc).view(self.num_query,-1)
+            # input_query_feat = emb_query_pc_contents.repeat(batch_size, 1, 1)
+            # global_pc_contents = self.fc1(glob_feat).view(self.num_query,-1)
+            # input_global_pc = global_pc_contents.repeat(batch_size, 1, 1)
             attn_mask = None
             mask_dict = None
 
@@ -793,9 +937,14 @@ class SparseBEVHead(DETRHead):
             self.loss_single, all_cls_scores, all_bbox_preds,
             all_gt_bboxes_list, all_gt_labels_list, 
             all_gt_bboxes_ignore_list)
+        
+        # losses_cls, losses_bbox = self.loss_single(
+        #     all_cls_scores, all_bbox_preds,
+        #     all_gt_bboxes_list, all_gt_labels_list, 
+        #     all_gt_bboxes_ignore_list)
 
         loss_dict = dict()
-        # loss of proposal generated from encode feature map
+        #loss of proposal generated from encode feature map
         if enc_cls_scores is not None:
             binary_labels_list = [
                 torch.zeros_like(gt_labels_list[i])
