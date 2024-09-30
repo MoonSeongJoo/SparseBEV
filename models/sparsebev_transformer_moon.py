@@ -126,23 +126,23 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         self.code_size = code_size
         self.pc_range = pc_range
 
-        self.position_encoder = nn.Sequential(
-            nn.Linear(3, self.embed_dims), 
-            nn.LayerNorm(self.embed_dims),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.embed_dims, self.embed_dims),
-            nn.LayerNorm(self.embed_dims),
-            nn.ReLU(inplace=True),
-        )
+        # self.position_encoder = nn.Sequential(
+        #     nn.Linear(3, self.embed_dims), 
+        #     nn.LayerNorm(self.embed_dims),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(self.embed_dims, self.embed_dims),
+        #     nn.LayerNorm(self.embed_dims),
+        #     nn.ReLU(inplace=True),
+        # )
 
-        self.self_attn = SparseBEVSelfAttention(embed_dims, num_heads=8, dropout=0.1, pc_range=pc_range)
-        self.sampling = SparseBEVSampling(embed_dims, num_frames=num_frames, num_groups=4, num_points=num_points, num_levels=num_levels, pc_range=pc_range)
-        self.mixing = AdaptiveMixing(in_dim=embed_dims, in_points=num_points * num_frames, n_groups=4, out_points=128)
-        self.ffn = FFN(embed_dims, feedforward_channels=512, ffn_drop=0.1)
+        # self.self_attn = SparseBEVSelfAttention(embed_dims, num_heads=8, dropout=0.1, pc_range=pc_range)
+        # self.sampling = SparseBEVSampling(embed_dims, num_frames=num_frames, num_groups=4, num_points=num_points, num_levels=num_levels, pc_range=pc_range)
+        # self.mixing = AdaptiveMixing(in_dim=embed_dims, in_points=num_points * num_frames, n_groups=4, out_points=128)
+        # self.ffn = FFN(embed_dims, feedforward_channels=512, ffn_drop=0.1)
 
-        self.norm1 = nn.LayerNorm(embed_dims)
-        self.norm2 = nn.LayerNorm(embed_dims)
-        self.norm3 = nn.LayerNorm(embed_dims)
+        # self.norm1 = nn.LayerNorm(embed_dims)
+        # self.norm2 = nn.LayerNorm(embed_dims)
+        # self.norm3 = nn.LayerNorm(embed_dims)
 
         self.conv_fuser = ConvFuser(embed_dims*2,embed_dims)
 
@@ -161,14 +161,14 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         reg_branch.append(nn.Linear(self.embed_dims, self.code_size))
         self.reg_branch = nn.Sequential(*reg_branch)
 
-    @torch.no_grad()
-    def init_weights(self):
-        self.self_attn.init_weights()
-        self.sampling.init_weights()
-        self.mixing.init_weights()
+    # @torch.no_grad()
+    # def init_weights(self):
+    #     self.self_attn.init_weights()
+    #     self.sampling.init_weights()
+    #     self.mixing.init_weights()
 
-        bias_init = bias_init_with_prob(0.01)
-        nn.init.constant_(self.cls_branch[-1].bias, bias_init)
+    #     bias_init = bias_init_with_prob(0.01)
+    #     nn.init.constant_(self.cls_branch[-1].bias, bias_init)
 
     def refine_bbox(self, bbox_proposal, bbox_delta):
         xyz = inverse_sigmoid(bbox_proposal[..., 0:3])
@@ -181,7 +181,7 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         """
         query_bbox: [B, Q, 10] [cx, cy, cz, w, h, d, rot.sin, rot.cos, vx, vy]
         """
-        B,N,C= query_feat.shape
+        B,C,_,_= pts_feats[0].shape
         # query_pos = self.position_encoder(query_bbox[..., :3])
         # query_feat = query_feat + query_pos
 
@@ -190,7 +190,7 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         # query_feat = self.norm2(self.mixing(sampled_feat, query_feat))
         # query_feat = self.norm3(self.ffn(query_feat))
 
-        bev_fusion = self.conv_fuser(pts_feats[0]).view(B,C,-1).permute(0,2,1)
+        bev_fusion = self.conv_fuser(pts_feats[0]).view(B,C//2,-1).permute(0,2,1)
 
         cls_score = self.cls_branch(bev_fusion)  # [B, Q, num_classes]
         bbox_pred = self.reg_branch(bev_fusion)  # [B, Q, code_size]
