@@ -4,7 +4,9 @@ from mmcv.runner import get_dist_info
 from torch.utils.data import DataLoader
 from mmdet.datasets.builder import worker_init_fn
 from mmdet.datasets.samplers import DistributedGroupSampler, DistributedSampler, GroupSampler
+from mmcv.utils import Registry
 
+OBJECTSAMPLERS = Registry("Object sampler")
 
 def build_dataloader(dataset,
                      samples_per_gpu,

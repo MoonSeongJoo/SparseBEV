@@ -534,123 +534,6 @@ class LoadPointsFromFile_moon(object):
         return repr_str
 
 @PIPELINES.register_module()
-class PointToMultiViewDepth_moon(object):
-
-    def __init__(self, grid_config, downsample=1):
-        self.downsample = downsample
-        self.grid_config = grid_config
-        self.num_points =900
-        self.grid_size = 30
-    
-    def __call__(self, results):
-        raw_points_lidar = results['points']
-        
-        points_lidar = trim_corrs(raw_points_lidar)
-
-        point_gts =[]
-        point_mis =[]
-        for cid in range(len(results['lidar2img'])):
-            lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(torch.float32)
-            lidar2cam = torch.from_numpy(results['lidar2cam'][cid]).to(torch.float32)
-            cam2img = torch.from_numpy(results['cam2img'][cid]).to(torch.float32)
-
-            points_img = points_lidar.tensor[:, :3].matmul(
-                lidar2img[:3, :3].T) + lidar2img[:3, 3].unsqueeze(0)
-            points_img = torch.cat(
-                [points_img[:, :2] / points_img[:, 2:3], points_img[:, 2:3]],
-                1)
-            miscalibrated_points_img = add_mis_calibration(lidar2cam,cam2img, points_lidar)
-
-            point_gts.append(points_img)
-            point_mis.append(miscalibrated_points_img)
-
-            # ####### depth image display ######
-            # depth_gt, gt_uv,gt_z = points2depthmap(points_img, results['img'][0].shape[0] ,results['img'][0].shape[1])
-            # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
-            # dense_depth_img_gt = dense_map_gpu_optimized(lidarOnImage_gt.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
-            # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
-            # dense_depth_img_color_gt = colormap(dense_depth_img_gt)
-
-            # depth_mis, uv,z = points2depthmap(miscalibrated_points_img, results['img'][0].shape[0] ,results['img'][0].shape[1])
-            # lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
-            # dense_depth_img_mis = dense_map_gpu_optimized(lidarOnImage_mis.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
-            # dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
-            # dense_depth_img_color_mis = colormap(dense_depth_img_mis)
-
-            # ###### input display ######
-            # img = results['img'][0]
-            # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
-            # if img.dtype == np.float32 or img.dtype == np.float64:
-            #     img = (img - img.min()) / (img.max() - img.min())
-            # plt.figure(figsize=(10, 10))
-            # plt.subplot(4,2,1)
-            # plt.imshow(img)
-            # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
-            # plt.title("input display", fontsize=10)
-
-            # plt.subplot(4,2,2)
-            # plt.imshow(img)
-            # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
-            # plt.title("input display", fontsize=10)
-
-            # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
-            # plt.subplot(4,2,3)
-            # plt.imshow(disp_gt2, cmap='magma')
-            # plt.title("gt display", fontsize=10)
-            # plt.axis('off')
-
-            # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
-            # plt.subplot(4,2,4)
-            # plt.imshow(disp_mis2, cmap='magma')
-            # plt.title("mis display", fontsize=10)
-            # plt.axis('off')
-            
-            # plt.show()
-            # plt.close()
-        
-        points2img_gt = torch.stack(point_gts)
-        points2img_mis = torch.stack(point_mis)
-        raw_points_tensor = raw_points_lidar.tensor[:,:3]
-        reduced_points_tensor = points_lidar.tensor[:, :3]
-
-        # 라이다 포인트를 호모지니어스 좌표로 변환 (Nx4 tensor)
-        lidar2global = torch.tensor(results['lidar2global'],dtype=torch.float32)
-        ones = torch.ones(reduced_points_tensor.shape[0], 1)  # (N, 1) 크기의 텐서 생성
-        lidar_points_homogeneous = torch.cat((reduced_points_tensor, ones), dim=1)  # (N, 4)로 변환
-        # 글로벌 좌표계로 변환
-        global_points_homogeneous = torch.matmul(lidar_points_homogeneous, lidar2global.T)  # (N, 4)
-        # 호모지니어스 좌표에서 3D 좌표로 변환
-        global_points = global_points_homogeneous[:, :3]  # (N, 3)로 변환
-
-        indices = torch.randint(0, global_points.shape[0], (self.num_points,))
-        selected_points = global_points[indices]  # shape: [900, 3]
-        sorted_points, sorted_indices = torch.sort(selected_points, dim=0)
-
-        # x, y 좌표만 추출
-        xy_points = sorted_points[:, :2]  # shape: [900, 2]
-        z_points = sorted_points[:, 2]
-        # xy 좌표를 grid_size에 맞게 정규화
-        grid_xy = (xy_points + 0.5) / self.grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
-        # grid_size를 다시 [0,1]로 정규화
-        min_val = grid_xy.min(dim=0)[0]  # 각 열의 최소값
-        max_val = grid_xy.max(dim=0)[0]  # 각 열의 최대값
-        normalized_grid_xy = (grid_xy - min_val) / (max_val - min_val)
-
-        min_z = torch.min(z_points)
-        max_z = torch.max(z_points)
-        normalized_z = (z_points -min_z) / (max_z -min_z)
-
-        results['points_gt']  = points2img_gt
-        results['points_mis'] = points2img_mis
-        results['reduce_points_raw'] = reduced_points_tensor
-        results['points_raw'] = raw_points_tensor
-        results['global_points'] = normalized_grid_xy
-        results['z_points'] = normalized_z
-
-        return results
-
-
-@PIPELINES.register_module()
 class LoadPointsFromMultiSweeps_moon(object):
     """Load points from multiple sweeps.
 
@@ -770,7 +653,7 @@ class LoadPointsFromMultiSweeps_moon(object):
                     sweep_points_list.append(points)
         else:
             if len(results['sweeps']) <= self.sweeps_num:
-                choices = np.arange(len(results['sweeps']))
+                choices = np.arange(len(results['sweeps'])) # original
             elif self.test_mode:
                 choices = np.arange(self.sweeps_num)
             else:
@@ -798,6 +681,126 @@ class LoadPointsFromMultiSweeps_moon(object):
     def __repr__(self):
         """str: Return a string that describes the module."""
         return f'{self.__class__.__name__}(sweeps_num={self.sweeps_num})'
+
+
+@PIPELINES.register_module()
+class PointToMultiViewDepth_moon(object):
+
+    def __init__(self, grid_config, downsample=1):
+        self.downsample = downsample
+        self.grid_config = grid_config
+        self.num_points =900
+        self.grid_size = 30
+    
+    def __call__(self, results):
+        raw_points_lidar = results['points']
+        
+        points_lidar = trim_corrs(raw_points_lidar)
+
+        point_gts =[]
+        point_mis =[]
+        for cid in range(len(results['lidar2img'])):
+            lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(torch.float32)
+            lidar2cam = torch.from_numpy(results['lidar2cam'][cid]).to(torch.float32)
+            cam2img = torch.from_numpy(results['cam2img'][cid]).to(torch.float32)
+
+            points_img = points_lidar.tensor[:, :3].matmul(
+                lidar2img[:3, :3].T) + lidar2img[:3, 3].unsqueeze(0)
+            points_img = torch.cat(
+                [points_img[:, :2] / points_img[:, 2:3], points_img[:, 2:3]],
+                1)
+            miscalibrated_points_img = add_mis_calibration(lidar2cam,cam2img, points_lidar)
+
+            point_gts.append(points_img)
+            point_mis.append(miscalibrated_points_img)
+
+            # ####### depth image display ######
+            # depth_gt, gt_uv,gt_z = points2depthmap(points_img, results['img'][0].shape[0] ,results['img'][0].shape[1])
+            # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
+            # dense_depth_img_gt = dense_map_gpu_optimized(lidarOnImage_gt.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
+            # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
+            # dense_depth_img_color_gt = colormap(dense_depth_img_gt)
+
+            # depth_mis, uv,z = points2depthmap(miscalibrated_points_img, results['img'][0].shape[0] ,results['img'][0].shape[1])
+            # lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
+            # dense_depth_img_mis = dense_map_gpu_optimized(lidarOnImage_mis.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
+            # dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
+            # dense_depth_img_color_mis = colormap(dense_depth_img_mis)
+
+            # ###### input display ######
+            # img = results['img'][0]
+            # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
+            # if img.dtype == np.float32 or img.dtype == np.float64:
+            #     img = (img - img.min()) / (img.max() - img.min())
+            # plt.figure(figsize=(10, 10))
+            # plt.subplot(4,2,1)
+            # plt.imshow(img)
+            # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
+            # plt.title("input display", fontsize=10)
+
+            # plt.subplot(4,2,2)
+            # plt.imshow(img)
+            # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
+            # plt.title("input display", fontsize=10)
+
+            # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
+            # plt.subplot(4,2,3)
+            # plt.imshow(disp_gt2, cmap='magma')
+            # plt.title("gt display", fontsize=10)
+            # plt.axis('off')
+
+            # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
+            # plt.subplot(4,2,4)
+            # plt.imshow(disp_mis2, cmap='magma')
+            # plt.title("mis display", fontsize=10)
+            # plt.axis('off')
+            
+            # plt.show()
+            # plt.close()
+        
+        points2img_gt = torch.stack(point_gts)
+        points2img_mis = torch.stack(point_mis)
+        raw_points_tensor = raw_points_lidar.tensor[:,:3]
+        reduced_points_tensor = points_lidar.tensor[:, :3]
+
+        # 라이다 포인트를 호모지니어스 좌표로 변환 (Nx4 tensor)
+        lidar2global = torch.tensor(results['lidar2global'],dtype=torch.float32)
+        ones = torch.ones(reduced_points_tensor.shape[0], 1)  # (N, 1) 크기의 텐서 생성
+        lidar_points_homogeneous = torch.cat((reduced_points_tensor, ones), dim=1)  # (N, 4)로 변환
+        # 글로벌 좌표계로 변환
+        global_points_homogeneous = torch.matmul(lidar_points_homogeneous, lidar2global.T)  # (N, 4)
+        # 호모지니어스 좌표에서 3D 좌표로 변환
+        global_points = global_points_homogeneous[:, :3]  # (N, 3)로 변환
+
+        indices = torch.randint(0, global_points.shape[0], (self.num_points,))
+        selected_points = global_points[indices]  # shape: [900, 3]
+        sorted_points, sorted_indices = torch.sort(selected_points, dim=0)
+
+        # x, y 좌표만 추출
+        xy_points = sorted_points[:, :2]  # shape: [900, 2]
+        z_points = sorted_points[:, 2]
+        # xy 좌표를 grid_size에 맞게 정규화
+        grid_xy = (xy_points + 0.5) / self.grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
+        # grid_size를 다시 [0,1]로 정규화
+        min_val = grid_xy.min(dim=0)[0]  # 각 열의 최소값
+        max_val = grid_xy.max(dim=0)[0]  # 각 열의 최대값
+        normalized_grid_xy = (grid_xy - min_val) / (max_val - min_val)
+
+        min_z = torch.min(z_points)
+        max_z = torch.max(z_points)
+        normalized_z = (z_points -min_z) / (max_z -min_z)
+
+        results['points_gt']  = points2img_gt
+        results['points_mis'] = points2img_mis
+        results['reduce_points_raw'] = reduced_points_tensor
+        results['points_raw'] = raw_points_tensor
+        results['global_points'] = normalized_grid_xy
+        results['z_points'] = normalized_z
+
+        return results
+
+
+
     
 
     
