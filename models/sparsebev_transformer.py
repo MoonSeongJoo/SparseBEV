@@ -188,7 +188,7 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         query_bbox: [B, Q, 10] [cx, cy, cz, w, h, d, rot.sin, rot.cos, vx, vy]
         """
         B,N,C= query_feat.shape
-        
+        query_feat_raw = query_feat.clone()
         # 패딩 크기 계산
         if attn_mask == None :
             query_bbox_padded = query_bbox
@@ -205,26 +205,26 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
             query_feat_padded  = F.pad(query_feat, (0, 0, 0, padding_needed)) # (1, 1210 + padding_needed, 256) 
             attn_mask_padded = F.pad(attn_mask, (0, padding_needed_mask, 0, padding_needed_mask))  # (1600, 1600)
 
-        query_pos = self.position_encoder(query_bbox_padded[..., :3])
-        query_feat_padded = query_feat_padded + query_pos
+        query_pos = self.position_encoder(query_bbox[..., :3])
+        query_feat = query_feat + query_pos
         
-        query_feat = self.norm1(self.self_attn(query_bbox_padded, query_feat_padded, attn_mask_padded))
+        query_feat = self.norm1(self.self_attn(query_bbox, query_feat, attn_mask))
         # query_feat = self.norm1(self.self_attn(query_bbox, query_feat))
         query_feat_inter = query_feat.clone()
-        sampled_feat = self.sampling(query_bbox_padded, query_feat, mlvl_feats, img_metas)
+        sampled_feat = self.sampling(query_bbox, query_feat, mlvl_feats, img_metas)
         query_feat = self.norm2(self.mixing(sampled_feat, query_feat))
         query_feat = self.norm3(self.ffn(query_feat))
  
-        if attn_mask == None :
-            query_feat_concat = torch.cat([query_feat_inter,query_feat],dim=2).permute(0,2,1).view(B,C*2,30,30)
-        else :
-            query_feat_concat = torch.cat([query_feat_inter,query_feat],dim=2).permute(0,2,1).view(B,C*2,40,40)
+        # if attn_mask == None :
+        #     query_feat_concat = torch.cat([query_feat_inter,query_feat],dim=2).permute(0,2,1).view(B,C*2,30,30)
+        # else :
+        #     query_feat_concat = torch.cat([query_feat_inter,query_feat],dim=2).permute(0,2,1).view(B,C*2,40,40)
         
-        bev_fusion = self.conv_fuser(query_feat_concat).view(B,C,-1).permute(0,2,1)
+        # bev_fusion = self.conv_fuser(query_feat_concat).view(B,C,-1).permute(0,2,1)
 
-        cls_score = self.cls_branch(bev_fusion)  # [B, Q, num_classes]
-        bbox_pred = self.reg_branch(bev_fusion)  # [B, Q, code_size]
-        bbox_pred = self.refine_bbox(query_bbox_padded, bbox_pred)
+        cls_score = self.cls_branch(query_feat_raw)  # [B, Q, num_classes]
+        bbox_pred = self.reg_branch(query_feat_raw)  # [B, Q, code_size]
+        # bbox_pred = self.refine_bbox(query_bbox_padded, bbox_pred)
 
         # calculate absolute velocity according to time difference
         time_diff = img_metas[0]['time_diff']  # [B, F]

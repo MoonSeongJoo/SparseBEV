@@ -35,6 +35,7 @@ class CustomNuScenesDataset(NuScenesDataset):
 
     def get_data_info(self, index):
         info = self.data_infos[index]
+        lidar_sweeps = info['sweeps']
         sweeps_prev, sweeps_next = self.collect_sweeps(index)
 
         ego2global_translation = info['ego2global_translation']
@@ -58,6 +59,7 @@ class CustomNuScenesDataset(NuScenesDataset):
         input_dict = dict(
             sample_idx=info['token'],
             sweeps={'prev': sweeps_prev, 'next': sweeps_next},
+            lidar_sweeps = lidar_sweeps,
             timestamp=info['timestamp'] / 1e6,
             ego2global_translation=ego2global_translation,
             ego2global_rotation=ego2global_rotation,

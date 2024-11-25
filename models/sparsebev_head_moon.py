@@ -161,24 +161,24 @@ class SparseBEVHead(DETRHead):
         self.dn_bbox_noise_scale = 0.5
         self.dn_label_noise_scale = 0.5
 
-    # def _init_layers(self):
-    #     self.init_query_bbox = nn.Embedding(self.num_query, 10)  # (x, y, z, w, l, h, sin, cos, vx, vy)
-    #     self.label_enc = nn.Embedding(self.num_classes + 1, self.embed_dims - 1)  # DAB-DETR
-    #     # self.fc = nn.Linear(self.embed_dims*2,self.embed_dims) # DDP error : 안쓰여지는 network
+    def _init_layers(self):
+        self.init_query_bbox = nn.Embedding(self.num_query, 10)  # (x, y, z, w, l, h, sin, cos, vx, vy)
+        self.label_enc = nn.Embedding(self.num_classes + 1, self.embed_dims - 1)  # DAB-DETR
+        # self.fc = nn.Linear(self.embed_dims*2,self.embed_dims) # DDP error : 안쓰여지는 network
 
-    #     nn.init.zeros_(self.init_query_bbox.weight[:, 2:3])
-    #     nn.init.zeros_(self.init_query_bbox.weight[:, 8:10])
-    #     nn.init.constant_(self.init_query_bbox.weight[:, 5:6], 1.5)
+        nn.init.zeros_(self.init_query_bbox.weight[:, 2:3])
+        nn.init.zeros_(self.init_query_bbox.weight[:, 8:10])
+        nn.init.constant_(self.init_query_bbox.weight[:, 5:6], 1.5)
 
-    #     self.grid_size = int(math.sqrt(self.num_query))
-    #     assert self.grid_size * self.grid_size == self.num_query
-    #     x = y = torch.arange(self.grid_size)
-    #     xx, yy = torch.meshgrid(x, y, indexing='ij')  # [0, grid_size - 1]
-    #     xy = torch.cat([xx[..., None], yy[..., None]], dim=-1)
-    #     xy = (xy + 0.5) / self.grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
-    #     with torch.no_grad():
-    #         self.init_query_bbox.weight[:, :2] = xy.reshape(-1, 2)  # [Q, 2]
-    #         self.grid = xy.reshape(-1, 2)
+        self.grid_size = int(math.sqrt(self.num_query))
+        assert self.grid_size * self.grid_size == self.num_query
+        x = y = torch.arange(self.grid_size)
+        xx, yy = torch.meshgrid(x, y, indexing='ij')  # [0, grid_size - 1]
+        xy = torch.cat([xx[..., None], yy[..., None]], dim=-1)
+        xy = (xy + 0.5) / self.grid_size  # [0.5, grid_size - 0.5] / grid_size ~= (0, 1)
+        with torch.no_grad():
+            self.init_query_bbox.weight[:, :2] = xy.reshape(-1, 2)  # [Q, 2]
+            self.grid = xy.reshape(-1, 2)
 
     def init_weights(self):
         self.transformer.init_weights()
@@ -322,11 +322,13 @@ class SparseBEVHead(DETRHead):
 
     def forward(self, pts_feats ,mlvl_feats, img_metas):
         
+        fusion_flag = True
         # grid = query_bbox_raw[:,:2]
         # query_bbox_raw[:,2] = z_points.squeeze(0)
         # query_bbox[..., :3] = query_bbox[..., :3].sigmoid()
         # query denoising
         B = pts_feats[0].shape[0]
+        
         # trim_points = self.trim_points(global_points,npoints = 900*16)
         # trim_points_xy = trim_points[...,:2]
         # mapping_points = self.map_points_to_grid(trim_points_xy,self.grid.cuda())
@@ -342,17 +344,19 @@ class SparseBEVHead(DETRHead):
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas, query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_pc_position, self.label_enc, img_metas,query_pc_contents)
         # query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw,img_metas,query_pc_contents)
-        if mlvl_feats is not None:
+
+        if fusion_flag == False :
+            query_feat = None
+            query_bbox = None
+            attn_mask = None
+            mask_dict = None
+        
+        else :
             query_bbox_raw = self.init_query_bbox.weight.clone()  # [Q, 10]
             query_bbox_raw, query_feat_raw, attn_mask, mask_dict = self.prepare_for_dn_input(B, query_bbox_raw, self.label_enc, img_metas)
 
             query_feat = query_feat_raw 
             query_bbox = query_bbox_raw 
-        else :
-            query_feat = None
-            query_bbox = None
-            attn_mask = None
-            mask_dict = None
         
         cls_scores, bbox_preds = self.transformer(
             query_bbox,

@@ -126,23 +126,23 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         self.code_size = code_size
         self.pc_range = pc_range
 
-        # self.position_encoder = nn.Sequential(
-        #     nn.Linear(3, self.embed_dims), 
-        #     nn.LayerNorm(self.embed_dims),
-        #     nn.ReLU(inplace=True),
-        #     nn.Linear(self.embed_dims, self.embed_dims),
-        #     nn.LayerNorm(self.embed_dims),
-        #     nn.ReLU(inplace=True),
-        # )
+        self.position_encoder = nn.Sequential(
+            nn.Linear(3, self.embed_dims), 
+            nn.LayerNorm(self.embed_dims),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.embed_dims, self.embed_dims),
+            nn.LayerNorm(self.embed_dims),
+            nn.ReLU(inplace=True),
+        )
 
-        # self.self_attn = SparseBEVSelfAttention(embed_dims, num_heads=8, dropout=0.1, pc_range=pc_range)
-        # self.sampling = SparseBEVSampling(embed_dims, num_frames=num_frames, num_groups=4, num_points=num_points, num_levels=num_levels, pc_range=pc_range)
-        # self.mixing = AdaptiveMixing(in_dim=embed_dims, in_points=num_points * num_frames, n_groups=4, out_points=128)
-        # self.ffn = FFN(embed_dims, feedforward_channels=512, ffn_drop=0.1)
+        self.self_attn = SparseBEVSelfAttention(embed_dims, num_heads=8, dropout=0.1, pc_range=pc_range)
+        self.sampling = SparseBEVSampling(embed_dims, num_frames=num_frames, num_groups=4, num_points=num_points, num_levels=num_levels, pc_range=pc_range)
+        self.mixing = AdaptiveMixing(in_dim=embed_dims, in_points=num_points * num_frames, n_groups=4, out_points=128)
+        self.ffn = FFN(embed_dims, feedforward_channels=512, ffn_drop=0.1)
 
-        # self.norm1 = nn.LayerNorm(embed_dims)
-        # self.norm2 = nn.LayerNorm(embed_dims)
-        # self.norm3 = nn.LayerNorm(embed_dims)
+        self.norm1 = nn.LayerNorm(embed_dims)
+        self.norm2 = nn.LayerNorm(embed_dims)
+        self.norm3 = nn.LayerNorm(embed_dims)
 
         self.conv_fuser = ConvFuser(embed_dims*2,embed_dims)
 
@@ -161,14 +161,14 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         reg_branch.append(nn.Linear(self.embed_dims, self.code_size))
         self.reg_branch = nn.Sequential(*reg_branch)
 
-    # @torch.no_grad()
-    # def init_weights(self):
-    #     self.self_attn.init_weights()
-    #     self.sampling.init_weights()
-    #     self.mixing.init_weights()
+    @torch.no_grad()
+    def init_weights(self):
+        self.self_attn.init_weights()
+        self.sampling.init_weights()
+        self.mixing.init_weights()
 
-    #     bias_init = bias_init_with_prob(0.01)
-    #     nn.init.constant_(self.cls_branch[-1].bias, bias_init)
+        bias_init = bias_init_with_prob(0.01)
+        nn.init.constant_(self.cls_branch[-1].bias, bias_init)
 
     def refine_bbox(self, bbox_proposal, bbox_delta):
         xyz = inverse_sigmoid(bbox_proposal[..., 0:3])
@@ -176,24 +176,48 @@ class SparseBEVTransformerDecoderLayer(BaseModule):
         xyz_new = torch.sigmoid(xyz_delta + xyz)
 
         return torch.cat([xyz_new, bbox_delta[..., 3:]], dim=-1)
+    
+    def query_sync(self, pc_feature, grid):
+        B, N, C = pc_feature.shape  # B: batch size, N: 32400, C: 256
+        H = int(np.sqrt(N))  # H = W = sqrt(32400) = 180
+        
+        # pc_feature를 (B, C, H, W) 형태로 변환
+        pc_feature = pc_feature.view(B, H, H, C).permute(0, 3, 1, 2)  # (B, 256, 180, 180)
+
+        # grid를 (B, H, W, 2) 형태로 변환
+        grid = grid.view(B, 180, 180, 2)
+        
+        # grid를 [-1, 1] 범위로 정규화
+        grid = grid * 2 - 1
+
+        # grid_sample을 사용하여 pc_feature 맵핑
+        sampled_grid = F.grid_sample(pc_feature, grid, mode='bilinear', padding_mode='border', align_corners=True)
+        
+        output = sampled_grid
+        
+        # 출력 shape: (B, C, 30, 30)
+        return output
 
     def forward(self, query_bbox, query_feat, mlvl_feats,pts_feats, attn_mask, img_metas):
         """
         query_bbox: [B, Q, 10] [cx, cy, cz, w, h, d, rot.sin, rot.cos, vx, vy]
         """
         B,C,_,_= pts_feats[0].shape
-        # query_pos = self.position_encoder(query_bbox[..., :3])
-        # query_feat = query_feat + query_pos
-
-        # query_feat = self.norm1(self.self_attn(query_bbox, query_feat, attn_mask))
-        # sampled_feat = self.sampling(query_bbox, query_feat, mlvl_feats, img_metas)
-        # query_feat = self.norm2(self.mixing(sampled_feat, query_feat))
-        # query_feat = self.norm3(self.ffn(query_feat))
+        grid = query_bbox[:,:,:2]
+        query_pos = self.position_encoder(query_bbox[..., :3])
+        query_feat = query_feat + query_pos
 
         bev_fusion = self.conv_fuser(pts_feats[0]).view(B,C//2,-1).permute(0,2,1)
 
-        cls_score = self.cls_branch(bev_fusion)  # [B, Q, num_classes]
-        bbox_pred = self.reg_branch(bev_fusion)  # [B, Q, code_size]
+        # query_feat = self.norm1(self.self_attn(query_bbox, query_feat, attn_mask))
+        sampled_feat =self.query_sync(bev_fusion,grid).view(B,C//2,-1).permute(0,2,1)
+        query_feat = sampled_feat
+        # sampled_feat = self.sampling(query_bbox, query_feat, bev_fusion, img_metas)
+        # query_feat = self.norm2(self.mixing(sampled_feat, query_feat))
+        # query_feat = self.norm3(self.ffn(query_feat))
+
+        cls_score = self.cls_branch(query_feat)  # [B, Q, num_classes]
+        bbox_pred = self.reg_branch(query_feat)  # [B, Q, code_size]
         # bbox_pred = self.refine_bbox(query_bbox, bbox_pred)
 
         # calculate absolute velocity according to time difference
