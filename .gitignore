@@ -52,3 +52,4 @@ pretrain
 *.png
 *.jpg
 AdaptiveMixing_nn
+nohup.out
